@@ -13,8 +13,14 @@ job cancelled and preserved as history -> org 404 -> zero strands in any
 unscoped list (the exact scenario that stranded three object types in the
 Phase-0 experiment). The task-side pump self-resumed a deletion stranded by
 an earlier broken publish path, demonstrating I3 in production before it was
-formally tested. (2) session leases + GC, (3) scoped-by-default lists and
-the NOT NULL schema tightening with the adopt-orphans migration.
+formally tested. (2) session leases + GC — **SHIPPED** as
+`patches/0002-session-leases.patch` (`0.0.2-g08940bb3f5`), proven live: an
+organization created with an already-expired `expires_at` and a child
+inventory was auto-deleted by the pump within 40s with no DELETE ever
+issued and a clean strand scan (invariant I5). The external sweeper cron
+becomes obsolete for every organization that carries a lease.
+(3) scoped-by-default lists and the NOT NULL schema tightening with the
+adopt-orphans migration — remaining.
 
 ## Context (all verified live, 2026-08-16)
 

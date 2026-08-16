@@ -1,2 +1,3 @@
 # one patch filename per line, applied in order
 0001-org-deletion-state-machine.patch
+0002-session-leases.patch

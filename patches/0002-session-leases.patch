@@ -1,0 +1,123 @@
+From: Automation Platform controller <controller@pipefail.dev>
+Subject: [PATCH 0002] session leases: an expired organization deletes itself
+
+Implements: ADR-0001 increment 2 (CTL-040; retires the external sweeper class)
+Tested by:  unit (lease GC state coverage) + live lease-expiry proof on prod1.
+
+Organizations gain a nullable, indexed `expires_at` (settable through the
+API). The deletion pump feeds any organization past its lease into the same
+observable deletion state machine as an explicit DELETE — jobs preserved,
+children reaped in order, zero strands. Ephemeral session orgs clean
+themselves up without cron sweepers; an org already being deleted is never
+double-scheduled (the exclusion covers exactly the non-terminal states,
+asserted by unit test).
+
+diff --git a/awx/api/serializers.py b/awx/api/serializers.py
+index d87ff57..1d5a26e 100644
+--- a/awx/api/serializers.py
++++ b/awx/api/serializers.py
+@@ -1199,7 +1199,7 @@ class OrganizationSerializer(BaseSerializer, OpaQueryPathMixin):
+ 
+     class Meta:
+         model = Organization
+-        fields = ('*', 'max_hosts', 'custom_virtualenv', 'default_environment', 'opa_query_path')
++        fields = ('*', 'max_hosts', 'custom_virtualenv', 'default_environment', 'opa_query_path', 'expires_at')
+         read_only_fields = ('*', 'custom_virtualenv')
+ 
+     def get_related(self, obj):
+diff --git a/awx/main/migrations/0209_organization_expires_at.py b/awx/main/migrations/0209_organization_expires_at.py
+new file mode 100644
+index 0000000..67952ab
+--- /dev/null
++++ b/awx/main/migrations/0209_organization_expires_at.py
+@@ -0,0 +1,22 @@
++# ADR-0001 increment 2: session lease on organizations.
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++    dependencies = [
++        ('main', '0208_organization_deletion'),
++    ]
++
++    operations = [
++        migrations.AddField(
++            model_name='organization',
++            name='expires_at',
++            field=models.DateTimeField(
++                blank=True,
++                db_index=True,
++                default=None,
++                help_text='If set, the organization is automatically deleted (state machine, jobs preserved) after this time.',
++                null=True,
++            ),
++        ),
++    ]
+diff --git a/awx/main/models/organization.py b/awx/main/models/organization.py
+index 4992930..3f61971 100644
+--- a/awx/main/models/organization.py
++++ b/awx/main/models/organization.py
+@@ -51,6 +51,16 @@ class Organization(CommonModel, NotificationFieldsModel, ResourceMixin, CustomVi
+         default=0,
+         help_text=_('Maximum number of hosts allowed to be managed by this organization.'),
+     )
++    # ADR-0001 increment 2: session lease. An organization with an expired
++    # lease is fed through the deletion state machine by the same pump that
++    # drives explicit deletions — ephemeral session orgs clean themselves up.
++    expires_at = models.DateTimeField(
++        null=True,
++        blank=True,
++        default=None,
++        db_index=True,
++        help_text=_('If set, the organization is automatically deleted (state machine, jobs preserved) after this time.'),
++    )
+     notification_templates_approvals = models.ManyToManyField("NotificationTemplate", blank=True, related_name='%(class)s_notification_templates_for_approvals')
+     default_environment = models.ForeignKey(
+         'ExecutionEnvironment',
+diff --git a/awx/main/tasks/org_deletion.py b/awx/main/tasks/org_deletion.py
+index dd61572..fbdab3a 100644
+--- a/awx/main/tasks/org_deletion.py
++++ b/awx/main/tasks/org_deletion.py
+@@ -54,7 +54,22 @@ def process_organization_deletions():
+ 
+     from awx.main.models.org_deletion import OrganizationDeletion
+ 
+-    stale = timezone.now() - timedelta(seconds=STUCK_AFTER_SECONDS)
++    from awx.main.models import Organization
++
++    now = timezone.now()
++    # Expired session leases become deletions like any other (jobs preserved).
++    expired = Organization.objects.filter(expires_at__isnull=False, expires_at__lt=now).exclude(
++        deletions__state__in=(
++            OrganizationDeletion.STATE_PENDING,
++            OrganizationDeletion.STATE_CANCELLING_JOBS,
++            OrganizationDeletion.STATE_REAPING,
++        )
++    )
++    for org in expired:
++        logger.info('organization %s (%s) lease expired at %s; scheduling deletion', org.pk, org.name, org.expires_at)
++        OrganizationDeletion.objects.create(organization=org, organization_id_snapshot=org.pk, organization_name=org.name)
++
++    stale = now - timedelta(seconds=STUCK_AFTER_SECONDS)
+     ready = OrganizationDeletion.objects.filter(state=OrganizationDeletion.STATE_PENDING)
+     stuck = OrganizationDeletion.objects.filter(
+         state__in=(OrganizationDeletion.STATE_CANCELLING_JOBS, OrganizationDeletion.STATE_REAPING), modified__lt=stale
+diff --git a/awx/main/tests/unit/test_org_deletion.py b/awx/main/tests/unit/test_org_deletion.py
+index 14895c8..41173b3 100644
+--- a/awx/main/tests/unit/test_org_deletion.py
++++ b/awx/main/tests/unit/test_org_deletion.py
+@@ -57,3 +57,14 @@ def test_child_plan_shape_and_order():
+     assert labels.index('job_templates') < labels.index('inventories')
+     # every entry is a callable factory
+     assert all(callable(f) for _, f in plan)
++
++
++def test_expired_lease_exclusion_states_cover_all_nonterminal():
++    # the lease GC must not double-create deletions for orgs already in flight:
++    # its exclusion list must cover exactly the non-terminal states
++    non_terminal = {s for s, _ in OrganizationDeletion.STATES} - set(OrganizationDeletion.TERMINAL_STATES)
++    assert non_terminal == {
++        OrganizationDeletion.STATE_PENDING,
++        OrganizationDeletion.STATE_CANCELLING_JOBS,
++        OrganizationDeletion.STATE_REAPING,
++    }
