@@ -29,6 +29,19 @@ Student-facing and console prose never says "AWX". Internal engine identifiers
 (`awx-controller` deployments, the `awx:` provider, `awx-gateway`) are
 implementation details and keep their names until a separately tested migration.
 
+## Development loop
+
+- `build/build.sh` — reproducible build: `sources.lock` SHAs + `patches/`
+  queue -> headless image on the prod1 builder -> registry. Tag derives from
+  the input hash.
+- `build/test.sh` — upstream unit-test subset inside the built image; the
+  recorded baseline is what every patch is judged against.
+- `build/verify.sh` — conformance gate for a running controller: locked
+  api-surface replay + pool-manager provider conformance. The DO467 serial
+  suite is the third leg, run from lab-content.
+- `patches/` — our divergence from upstream as an ordered, reviewed queue
+  (currently empty; ADR-0001 increment 1 lands first).
+
 ## Documents
 
 - `docs/REQUIREMENTS.md` — the requirements (CTL-xxx) with priorities and

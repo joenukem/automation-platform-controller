@@ -1,6 +1,14 @@
 # ADR-0001 — Organizations are aggregate roots; deletion is an observable state machine
 
-Status: PROPOSED · 2026-08-16 · Drives CTL-040, CTL-041, CTL-042, CTL-043
+Status: **ACCEPTED** 2026-08-16 · Drives CTL-040, CTL-041, CTL-042, CTL-043
+Acceptance evidence: the Phase-0 orphan experiment reproduced the defect class
+on the devel line itself (project stranded, job template stranded *degraded*
+with its inventory link nulled, inventory wedged in `pending_deletion`
+forever), so this is owned work, not inherited behavior. Implementation lands
+as the first patch series (see `../../patches/README.md`), increment order:
+(1) deletion state machine + reaper (CTL-041), (2) session leases + GC,
+(3) scoped-by-default lists and the NOT NULL schema tightening with the
+adopt-orphans migration.
 
 ## Context (all verified live, 2026-08-16)
 

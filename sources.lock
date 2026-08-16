@@ -5,4 +5,5 @@ awx                     3fea0704202caae1313b727868f3f0b12b9bf345  2026-08-14  (d
 django-ansible-base     f90ed8aec3af316cdf5b02be3c49a31f9a9f04b1  2026-08-14  (devel, pinned in requirements_git.txt)
 awx-plugins             7c6a7cf97ec1e2ed3c36c0dd2e0dbb29436dea78  2026-06-18  (devel, pinned in requirements_git.txt)
 dispatcherd             2026.3.25                                             (PyPI, from awx requirements.txt)
-awx_plugins.interfaces  (tip at build time; pin on next build)
+awx_plugins.interfaces  b52a9f8095330a94daa4adcafab24d2ed8770b94  (pinned in requirements_git.txt)
+version-prefix 0.0.2
