@@ -186,7 +186,15 @@ These are the requirements our own incident evidence drives; each cites
 5. `docs/parity-drivers.md` updated: every driver either closed by evidence or
    explicitly carried as a known gap with a requirement ID.
 
-## 9. Phasing
+## 9. Design agenda
+
+The requirements above say *what*; `docs/design/DESIGN-AGENDA.md` (D-1..D-12)
+says what must be *designed* to satisfy them, and `docs/design/ADR-0001-organization-ownership.md`
+is the first accepted-for-review decision (drives CTL-040..043). No CTL
+requirement in sections 5–7 starts implementation before its D-item's ADR is
+accepted.
+
+## 10. Phasing
 
 - **Phase 0 — spike (this proves feasibility, nothing ships):** build
   `ansible/awx` `devel` + DAB into images on the prod1 builder; boot against a
@@ -198,7 +206,7 @@ These are the requirements our own incident evidence drives; each cites
 - **Phase 3 — lifecycle + scale:** CTL-040..052, soak, cutover rehearsal,
   release 1.0.
 
-## 10. Sources
+## 11. Sources
 
 - Upstream repositories: `ansible/awx` (devel), `ansible/django-ansible-base`,
   `ansible/dispatcherd`, `ansible/awx-plugins`, `ansible/awx_plugins.interfaces`.
