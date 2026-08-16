@@ -47,3 +47,13 @@ implementation details and keep their names until a separately tested migration.
   `ansible/awx_plugins.interfaces`, `ansible/dispatcherd`, `ansible/ansible-ui`.
 - No public repository exists for Red Hat's productized controller; its source
   is distributed only through subscription artifacts.
+
+## Sole sanctioned engine source
+
+As of 2026-08-16 the frozen engine (`ansible/awx:24.6.1`) is banned as a target
+across the platform: lab-content (`tools/ban-frozen-controller.sh`), awx-gateway
+(`scripts/ban-frozen-engine.sh` + `FROZEN-ENGINE-EXCEPTION.md`, the bounded
+register for the currently-running stack), and every
+`open-automation-platform-*` repo plus `awx-telemetry-agent` (AGENTS.md policy).
+This project is the only sanctioned controller line; the runtime exception on
+prod1/franken expires at the CTL-013 cutover.
