@@ -35,7 +35,15 @@ remains a Phase 2 work item (gateway-issued tokens).
 | ex467-06 (inventories, groups, vars) | **PASS** |
 | ex467-08 (project from git) | **PASS** |
 | ex467-17 (troubleshoot controller job — seeded broken credential, console diagnosis, graded verify) | **PASS** |
+| ex467-11 (workflow with approval) — after the double-setup fix | **PASS** |
+| ex467-review-job-template-and-survey (survey build + enforcement) | **PASS** |
+| ex467-review-inventory-groups-and-vars | **PASS** |
 | gateway ROPC (Keycloak user → `/api/v2/…` via ap-console) | 200 |
+
+**Every lab that was green on the frozen engine is green on the candidate** —
+the full pre-cutover passing set (6 labs + reviews) reproduced through the
+real platform: webapp → pools → gateway → candidate controller → container-
+group jobs → graded verify.
 
 The unrelated tenant pool (`ansible-navigator-alma10`) provisioned sessions
 continuously during the window, unaffected.
