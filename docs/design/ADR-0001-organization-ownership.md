@@ -6,9 +6,15 @@ on the devel line itself (project stranded, job template stranded *degraded*
 with its inventory link nulled, inventory wedged in `pending_deletion`
 forever), so this is owned work, not inherited behavior. Implementation lands
 as the first patch series (see `../../patches/README.md`), increment order:
-(1) deletion state machine + reaper (CTL-041), (2) session leases + GC,
-(3) scoped-by-default lists and the NOT NULL schema tightening with the
-adopt-orphans migration.
+(1) deletion state machine + reaper (CTL-041) — **SHIPPED** as
+`patches/0001-org-deletion-state-machine.patch`, deployed to prod1 as
+`0.0.2-g9436511855` and proven live: DELETE with a RUNNING job -> 202 ->
+job cancelled and preserved as history -> org 404 -> zero strands in any
+unscoped list (the exact scenario that stranded three object types in the
+Phase-0 experiment). The task-side pump self-resumed a deletion stranded by
+an earlier broken publish path, demonstrating I3 in production before it was
+formally tested. (2) session leases + GC, (3) scoped-by-default lists and
+the NOT NULL schema tightening with the adopt-orphans migration.
 
 ## Context (all verified live, 2026-08-16)
 

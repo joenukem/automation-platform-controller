@@ -1,0 +1,471 @@
+From: Automation Platform controller <controller@pipefail.dev>
+Subject: [PATCH 0001] organization deletion is an observable, resumable state machine
+
+Implements: ADR-0001 increment 1 (CTL-041; groundwork for CTL-040)
+Tested by:  awx/main/tests/unit/test_org_deletion.py (transition table, plan
+            order) and the pool-manager provider-conformance leak scan against
+            a deployed build.
+
+DELETE /api/v2/organizations/N/ now returns 202 and drives an
+OrganizationDeletion record through pending -> cancelling-jobs -> reaping ->
+complete|failed via a dispatcherd reaper task. Active jobs are cancelled with
+a bounded wait; children are deleted in dependency order (workflows,
+templates, projects, inventories, notifiers, teams, labels) before the
+organization row; the record survives the org (SET_NULL + snapshots) so
+terminal states stay observable. A failed deletion resumes on the next
+DELETE. ?mode=abort-if-active preserves the legacy refuse-while-busy
+behavior. Jobs are history and are never deleted (tombstoning is increment 3).
+
+The web tier never publishes to the dispatcher (it has no queue a worker
+listens on — found live: such a publish vanishes silently). It only writes
+the OrganizationDeletion row; a 20s DISPATCH_SCHEDULE pump on the task node
+(process_organization_deletions) dispatches reapers for pending rows and
+re-dispatches any deletion stuck non-terminal past 10 minutes, which makes
+crashed reapers self-resuming by construction.
+
+diff --git a/awx/api/views/organization.py b/awx/api/views/organization.py
+index 2e4ef01..c4fbee6 100644
+--- a/awx/api/views/organization.py
++++ b/awx/api/views/organization.py
+@@ -10,6 +10,10 @@ from django.contrib.contenttypes.models import ContentType
+ from django.utils.translation import gettext_lazy as _
+ 
+ # AWX
++from rest_framework import status
++from rest_framework.exceptions import PermissionDenied
++from rest_framework.response import Response
++
+ from ansible_base.rbac.models import RoleDefinition, RoleUserAssignment
+ from awx.main.models import (
+     ActivityStream,
+@@ -69,6 +73,38 @@ class OrganizationDetail(RelatedJobsPreventDeleteMixin, RetrieveUpdateDestroyAPI
+     serializer_class = OrganizationSerializer
+     resource_purpose = 'organization detail'
+ 
++    def destroy(self, request, *args, **kwargs):
++        # ADR-0001 increment 1: deletion is an asynchronous, resumable state
++        # machine. 202 + an OrganizationDeletion record replaces the old
++        # synchronous delete, which refused while jobs ran (409) and left
++        # SET_NULL children stranded. ?mode=abort-if-active keeps the legacy
++        # refuse-while-busy behavior for callers that want it.
++        from awx.main.models.org_deletion import OrganizationDeletion
++
++        if request.query_params.get('mode') == 'abort-if-active':
++            return super(OrganizationDetail, self).destroy(request, *args, **kwargs)
++
++        obj = self.get_object()
++        if not request.user.can_access(self.model, 'delete', obj):
++            raise PermissionDenied()
++        deletion = OrganizationDeletion.objects.filter(organization=obj).exclude(state=OrganizationDeletion.STATE_COMPLETE).order_by('-id').first()
++        if deletion is None:
++            deletion = OrganizationDeletion.objects.create(
++                organization=obj,
++                organization_id_snapshot=obj.pk,
++                organization_name=obj.name,
++            )
++        elif deletion.state == OrganizationDeletion.STATE_FAILED:
++            # a re-issued DELETE resumes a failed deletion
++            deletion.transition(OrganizationDeletion.STATE_PENDING)
++        # No dispatch from the web tier: it has no queue a worker listens on.
++        # The task-side DISPATCH_SCHEDULE pump (process_organization_deletions)
++        # picks the row up within its 20s period.
++        return Response(
++            {'deletion': deletion.pk, 'state': deletion.state, 'organization': obj.pk},
++            status=status.HTTP_202_ACCEPTED,
++        )
++
+     def get_serializer_context(self, *args, **kwargs):
+         full_context = super(OrganizationDetail, self).get_serializer_context(*args, **kwargs)
+ 
+diff --git a/awx/main/migrations/0208_organization_deletion.py b/awx/main/migrations/0208_organization_deletion.py
+new file mode 100644
+index 0000000..bb06bd6
+--- /dev/null
++++ b/awx/main/migrations/0208_organization_deletion.py
+@@ -0,0 +1,50 @@
++# ADR-0001 increment 1: OrganizationDeletion — the observable record behind
++# asynchronous organization deletion.
++from django.db import migrations, models
++import django.db.models.deletion
++
++
++class Migration(migrations.Migration):
++    dependencies = [
++        ('main', '0207_alter_skip_tags_to_textfield'),
++    ]
++
++    operations = [
++        migrations.CreateModel(
++            name='OrganizationDeletion',
++            fields=[
++                ('id', models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('organization_id_snapshot', models.PositiveIntegerField(help_text='Stable id of the organization, kept after deletion.')),
++                ('organization_name', models.CharField(help_text='Name at deletion time, kept after deletion.', max_length=512)),
++                (
++                    'state',
++                    models.CharField(
++                        choices=[
++                            ('pending', 'Pending'),
++                            ('cancelling-jobs', 'Cancelling jobs'),
++                            ('reaping', 'Reaping'),
++                            ('complete', 'Complete'),
++                            ('failed', 'Failed'),
++                        ],
++                        default='pending',
++                        max_length=32,
++                    ),
++                ),
++                ('progress', models.JSONField(blank=True, default=dict, help_text='Per-type deleted/cancelled counts.')),
++                ('error', models.TextField(blank=True, default='')),
++                ('created', models.DateTimeField(auto_now_add=True)),
++                ('modified', models.DateTimeField(auto_now=True)),
++                (
++                    'organization',
++                    models.ForeignKey(
++                        help_text='The organization being deleted; NULL once it is gone.',
++                        null=True,
++                        on_delete=django.db.models.deletion.SET_NULL,
++                        related_name='deletions',
++                        to='main.organization',
++                    ),
++                ),
++            ],
++            options={'ordering': ('-id',)},
++        ),
++    ]
+diff --git a/awx/main/models/__init__.py b/awx/main/models/__init__.py
+index 8a71fb7..60bb65f 100644
+--- a/awx/main/models/__init__.py
++++ b/awx/main/models/__init__.py
+@@ -19,6 +19,7 @@ from ansible_base.lib.utils.models import user_summary_fields
+ from awx.main.models.base import BaseModel, PrimordialModel, accepts_json, VERBOSITY_CHOICES  # noqa
+ from awx.main.models.unified_jobs import UnifiedJob, UnifiedJobTemplate, StdoutMaxBytesExceeded  # noqa
+ from awx.main.models.organization import Organization, Team, UserSessionMembership  # noqa
++from awx.main.models.org_deletion import OrganizationDeletion  # noqa
+ from awx.main.models.credential import Credential, CredentialType, CredentialInputSource, ManagedCredentialType, build_safe_env  # noqa
+ from awx.main.models.projects import Project, ProjectUpdate  # noqa
+ from awx.main.models.receptor_address import ReceptorAddress  # noqa
+diff --git a/awx/main/models/org_deletion.py b/awx/main/models/org_deletion.py
+new file mode 100644
+index 0000000..f75b523
+--- /dev/null
++++ b/awx/main/models/org_deletion.py
+@@ -0,0 +1,97 @@
++# Copyright (c) 2026 Automation Platform contributors
++# ADR-0001 increment 1: organization deletion is an observable, resumable
++# state machine, not a synchronous transaction that strands children.
++
++from django.db import models
++from django.utils.translation import gettext_lazy as _
++
++__all__ = ['OrganizationDeletion']
++
++
++class OrganizationDeletion(models.Model):
++    """A requested organization deletion and its progress.
++
++    DELETE /api/v2/organizations/N/ creates (or resumes) one of these and
++    returns 202; the reaper task (awx.main.tasks.org_deletion) drives it to a
++    terminal state. The record survives the organization row (SET_NULL plus
++    snapshots) so `complete` and `failed` remain observable after the fact.
++    """
++
++    STATE_PENDING = 'pending'
++    STATE_CANCELLING_JOBS = 'cancelling-jobs'
++    STATE_REAPING = 'reaping'
++    STATE_COMPLETE = 'complete'
++    STATE_FAILED = 'failed'
++    STATES = [
++        (STATE_PENDING, _('Pending')),
++        (STATE_CANCELLING_JOBS, _('Cancelling jobs')),
++        (STATE_REAPING, _('Reaping')),
++        (STATE_COMPLETE, _('Complete')),
++        (STATE_FAILED, _('Failed')),
++    ]
++    TERMINAL_STATES = (STATE_COMPLETE, STATE_FAILED)
++    # Legal transitions; anything else is a programming error surfaced loudly.
++    TRANSITIONS = {
++        STATE_PENDING: (STATE_CANCELLING_JOBS, STATE_FAILED, STATE_COMPLETE),
++        STATE_CANCELLING_JOBS: (STATE_REAPING, STATE_FAILED),
++        STATE_REAPING: (STATE_COMPLETE, STATE_FAILED),
++        # failed deletions are resumable: a re-issued DELETE re-enters pending
++        STATE_FAILED: (STATE_PENDING,),
++        STATE_COMPLETE: (),
++    }
++
++    class Meta:
++        app_label = 'main'
++        ordering = ('-id',)
++
++    organization = models.ForeignKey(
++        'Organization',
++        related_name='deletions',
++        null=True,
++        on_delete=models.SET_NULL,
++        help_text=_('The organization being deleted; NULL once it is gone.'),
++    )
++    organization_id_snapshot = models.PositiveIntegerField(help_text=_('Stable id of the organization, kept after deletion.'))
++    organization_name = models.CharField(max_length=512, help_text=_('Name at deletion time, kept after deletion.'))
++    state = models.CharField(max_length=32, choices=STATES, default=STATE_PENDING)
++    progress = models.JSONField(default=dict, blank=True, help_text=_('Per-type deleted/cancelled counts.'))
++    error = models.TextField(blank=True, default='')
++    created = models.DateTimeField(auto_now_add=True)
++    modified = models.DateTimeField(auto_now=True)
++
++    def transition(self, new_state, error=''):
++        """Move to new_state, enforcing the transition table. Saves."""
++        allowed = self.TRANSITIONS.get(self.state, ())
++        if new_state not in allowed:
++            raise ValueError(f'illegal deletion transition {self.state} -> {new_state}')
++        self.state = new_state
++        if error:
++            self.error = error
++        self.save(update_fields=['state', 'error', 'modified'])
++
++    @property
++    def is_terminal(self):
++        return self.state in self.TERMINAL_STATES
++
++
++def child_deletion_plan():
++    """Ordered (label, queryset-factory) plan for reaping an organization.
++
++    Order matters: templates reference projects/inventories, so they go
++    first; teams and labels last; credentials and execution environments
++    CASCADE with the organization row itself. Jobs are history and are not
++    deleted (their resource FKs null out; tombstoning is increment 3).
++    Returns a list of (type_label, callable(org) -> queryset).
++    """
++    from awx.main.models import Inventory, JobTemplate, NotificationTemplate, Project, Team, WorkflowJobTemplate
++    from awx.main.models.label import Label
++
++    return [
++        ('workflow_job_templates', lambda org: WorkflowJobTemplate.objects.filter(organization=org)),
++        ('job_templates', lambda org: JobTemplate.objects.filter(models.Q(project__organization=org) | models.Q(inventory__organization=org))),
++        ('projects', lambda org: Project.objects.filter(organization=org)),
++        ('inventories', lambda org: Inventory.objects.filter(organization=org)),
++        ('notification_templates', lambda org: NotificationTemplate.objects.filter(organization=org)),
++        ('teams', lambda org: Team.objects.filter(organization=org)),
++        ('labels', lambda org: Label.objects.filter(organization=org)),
++    ]
+diff --git a/awx/main/tasks/org_deletion.py b/awx/main/tasks/org_deletion.py
+new file mode 100644
+index 0000000..dd61572
+--- /dev/null
++++ b/awx/main/tasks/org_deletion.py
+@@ -0,0 +1,133 @@
++# Copyright (c) 2026 Automation Platform contributors
++# ADR-0001 increment 1: the reaper behind DELETE /api/v2/organizations/N/.
++#
++# Idempotent and resumable: every step re-derives state from the database, so
++# a crashed or re-dispatched run continues where the last one stopped instead
++# of leaving a half-deleted organization (the abort-on-first-409 failure class
++# this replaces).
++
++import logging
++import time
++
++from dispatcherd.publish import task
++
++from awx.main.constants import ACTIVE_STATES
++from awx.main.dispatch import get_task_queuename
++
++logger = logging.getLogger('awx.main.tasks.org_deletion')
++
++CANCEL_WAIT_SECONDS = 300
++CANCEL_POLL_SECONDS = 5
++
++
++def _active_jobs_for(org):
++    """Unified jobs still running that belong to the organization's estate."""
++    from django.db.models import Q
++
++    from awx.main.models import UnifiedJob
++
++    return UnifiedJob.objects.filter(
++        Q(unified_job_template__organization=org)
++        | Q(job__inventory__organization=org)
++        | Q(job__project__organization=org),
++        status__in=ACTIVE_STATES,
++    ).distinct()
++
++
++STUCK_AFTER_SECONDS = 600
++
++
++@task(queue=get_task_queuename, timeout=120, on_duplicate='discard')
++def process_organization_deletions():
++    """Periodic pump: dispatch a reaper for every deletion that needs one.
++
++    The web tier only writes the OrganizationDeletion row (it has no queue a
++    worker listens on — publishing from web goes nowhere, silently). This
++    runs on the task node via DISPATCH_SCHEDULE, so its local queuename is a
++    real worker queue. Picking work up from the database also makes crashed
++    reapers self-resuming: a deletion stuck in a non-terminal state past
++    STUCK_AFTER_SECONDS is simply dispatched again.
++    """
++    from datetime import timedelta
++
++    from django.utils import timezone
++
++    from awx.main.models.org_deletion import OrganizationDeletion
++
++    stale = timezone.now() - timedelta(seconds=STUCK_AFTER_SECONDS)
++    ready = OrganizationDeletion.objects.filter(state=OrganizationDeletion.STATE_PENDING)
++    stuck = OrganizationDeletion.objects.filter(
++        state__in=(OrganizationDeletion.STATE_CANCELLING_JOBS, OrganizationDeletion.STATE_REAPING), modified__lt=stale
++    )
++    for deletion in list(ready) + list(stuck):
++        logger.info('dispatching reaper for organization deletion %s (state=%s)', deletion.pk, deletion.state)
++        reap_organization.apply_async([deletion.pk], queue=get_task_queuename())
++
++
++@task(queue=get_task_queuename, timeout=1800, on_duplicate='queue_one')
++def reap_organization(deletion_id):
++    from awx.main.models.org_deletion import OrganizationDeletion, child_deletion_plan
++
++    try:
++        deletion = OrganizationDeletion.objects.get(pk=deletion_id)
++    except OrganizationDeletion.DoesNotExist:
++        logger.warning('organization deletion %s no longer exists', deletion_id)
++        return
++    if deletion.state == OrganizationDeletion.STATE_COMPLETE:
++        return
++    if deletion.state == OrganizationDeletion.STATE_FAILED:
++        # a re-dispatch of a failed deletion resumes it
++        deletion.transition(OrganizationDeletion.STATE_PENDING)
++
++    org = deletion.organization
++    if org is None:
++        # organization already gone: nothing left to do but say so
++        deletion.transition(OrganizationDeletion.STATE_COMPLETE)
++        return
++
++    progress = dict(deletion.progress or {})
++    try:
++        # Phase 1 — cancel active jobs, then wait (bounded) for them to settle.
++        if deletion.state == OrganizationDeletion.STATE_PENDING:
++            deletion.transition(OrganizationDeletion.STATE_CANCELLING_JOBS)
++        if deletion.state == OrganizationDeletion.STATE_CANCELLING_JOBS:
++            cancelled = 0
++            for uj in _active_jobs_for(org):
++                try:
++                    uj.cancel()
++                    cancelled += 1
++                except Exception:
++                    logger.exception('cancel of job %s during org deletion %s', uj.pk, deletion_id)
++            progress['jobs_cancelled'] = progress.get('jobs_cancelled', 0) + cancelled
++            deadline = time.monotonic() + CANCEL_WAIT_SECONDS
++            while _active_jobs_for(org).exists():
++                if time.monotonic() > deadline:
++                    raise RuntimeError(f'jobs still active after {CANCEL_WAIT_SECONDS}s of cancellation; re-issue the DELETE to resume')
++                time.sleep(CANCEL_POLL_SECONDS)
++            deletion.progress = progress
++            deletion.transition(OrganizationDeletion.STATE_REAPING)
++
++        # Phase 2 — delete children in dependency order, then the organization.
++        for label, qs_factory in child_deletion_plan():
++            count = 0
++            for obj in qs_factory(org).iterator():
++                obj.delete()
++                count += 1
++            if count:
++                progress[label] = progress.get(label, 0) + count
++                deletion.progress = progress
++                deletion.save(update_fields=['progress', 'modified'])
++        org.delete()
++        deletion.organization = None
++        deletion.save(update_fields=['organization', 'modified'])
++        deletion.transition(OrganizationDeletion.STATE_COMPLETE)
++        logger.info('organization %s (%s) deleted: %s', deletion.organization_id_snapshot, deletion.organization_name, progress)
++    except Exception as exc:
++        logger.exception('organization deletion %s failed', deletion_id)
++        deletion.progress = progress
++        try:
++            deletion.transition(OrganizationDeletion.STATE_FAILED, error=str(exc)[:5000])
++        except ValueError:
++            deletion.state = OrganizationDeletion.STATE_FAILED
++            deletion.error = str(exc)[:5000]
++            deletion.save(update_fields=['state', 'error', 'progress', 'modified'])
+diff --git a/awx/main/tests/unit/test_org_deletion.py b/awx/main/tests/unit/test_org_deletion.py
+new file mode 100644
+index 0000000..14895c8
+--- /dev/null
++++ b/awx/main/tests/unit/test_org_deletion.py
+@@ -0,0 +1,59 @@
++"""Unit tests for ADR-0001 increment 1 (OrganizationDeletion state machine).
++
++Pure-logic coverage: the transition table and the child deletion plan's shape
++and order. DB behavior (reaper end-to-end) is covered by the platform's
++provider-conformance leak scan, which is the acceptance test the ADR names.
++"""
++
++import pytest
++
++from awx.main.models.org_deletion import OrganizationDeletion, child_deletion_plan
++
++
++def _unsaved(state):
++    d = OrganizationDeletion(organization_id_snapshot=1, organization_name='x', state=state)
++    # avoid touching the DB in a unit test
++    d.save = lambda *a, **k: None
++    return d
++
++
++def test_legal_transition_path():
++    d = _unsaved(OrganizationDeletion.STATE_PENDING)
++    d.transition(OrganizationDeletion.STATE_CANCELLING_JOBS)
++    d.transition(OrganizationDeletion.STATE_REAPING)
++    d.transition(OrganizationDeletion.STATE_COMPLETE)
++    assert d.is_terminal
++
++
++def test_illegal_transitions_raise():
++    d = _unsaved(OrganizationDeletion.STATE_PENDING)
++    with pytest.raises(ValueError):
++        d.transition(OrganizationDeletion.STATE_REAPING)
++    done = _unsaved(OrganizationDeletion.STATE_COMPLETE)
++    with pytest.raises(ValueError):
++        done.transition(OrganizationDeletion.STATE_PENDING)
++
++
++def test_failed_is_resumable_only_to_pending():
++    d = _unsaved(OrganizationDeletion.STATE_FAILED)
++    with pytest.raises(ValueError):
++        d.transition(OrganizationDeletion.STATE_REAPING)
++    d.transition(OrganizationDeletion.STATE_PENDING)
++    assert d.state == OrganizationDeletion.STATE_PENDING
++
++
++def test_transition_records_error():
++    d = _unsaved(OrganizationDeletion.STATE_REAPING)
++    d.transition(OrganizationDeletion.STATE_FAILED, error='boom')
++    assert d.error == 'boom' and d.is_terminal
++
++
++def test_child_plan_shape_and_order():
++    plan = child_deletion_plan()
++    labels = [label for label, _ in plan]
++    # templates must be reaped before the projects/inventories they reference
++    assert labels.index('workflow_job_templates') < labels.index('projects')
++    assert labels.index('job_templates') < labels.index('projects')
++    assert labels.index('job_templates') < labels.index('inventories')
++    # every entry is a callable factory
++    assert all(callable(f) for _, f in plan)
+diff --git a/awx/settings/defaults.py b/awx/settings/defaults.py
+index 58fdd6b..ea1383a 100644
+--- a/awx/settings/defaults.py
++++ b/awx/settings/defaults.py
+@@ -439,6 +439,12 @@ DISPATCHER_SCHEDULE = {
+     'awx.main.scheduler.tasks.task_manager': {'task': 'awx.main.scheduler.tasks.task_manager', 'schedule': 20, 'options': {'expires': 20}},
+     'awx.main.scheduler.tasks.dependency_manager': {'task': 'awx.main.scheduler.tasks.dependency_manager', 'schedule': 20, 'options': {'expires': 20}},
+     'awx.main.tasks.system.awx_k8s_reaper': {'task': 'awx.main.tasks.system.awx_k8s_reaper', 'schedule': 60, 'options': {'expires': 50}},
++    # ADR-0001: pump pending/stuck organization deletions to a reaper
++    'awx.main.tasks.org_deletion.process_organization_deletions': {
++        'task': 'awx.main.tasks.org_deletion.process_organization_deletions',
++        'schedule': 20,
++        'options': {'expires': 15},
++    },
+     'awx.main.tasks.system.awx_receptor_workunit_reaper': {'task': 'awx.main.tasks.system.awx_receptor_workunit_reaper', 'schedule': 60},
+     'awx.main.analytics.analytics_tasks.send_subsystem_metrics': {'task': 'awx.main.analytics.analytics_tasks.send_subsystem_metrics', 'schedule': 20},
+     'awx.main.tasks.system.cleanup_images_and_files': {'task': 'awx.main.tasks.system.cleanup_images_and_files', 'schedule': 10800},
