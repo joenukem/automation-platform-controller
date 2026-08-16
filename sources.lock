@@ -1,0 +1,8 @@
+# Pinned upstream sources for the composed controller (CTL-001).
+# Built as 192.168.1.240:30500/automation-platform/controller:0.0.1-phase0
+# (image d666a7850c24, 813 MB, headless, receptor from quay.io/ansible/receptor:devel)
+awx                     3fea0704202caae1313b727868f3f0b12b9bf345  2026-08-14  (devel)
+django-ansible-base     f90ed8aec3af316cdf5b02be3c49a31f9a9f04b1  2026-08-14  (devel, pinned in requirements_git.txt)
+awx-plugins             7c6a7cf97ec1e2ed3c36c0dd2e0dbb29436dea78  2026-06-18  (devel, pinned in requirements_git.txt)
+dispatcherd             2026.3.25                                             (PyPI, from awx requirements.txt)
+awx_plugins.interfaces  (tip at build time; pin on next build)

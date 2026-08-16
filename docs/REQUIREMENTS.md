@@ -227,9 +227,10 @@ accepted.
 
 ## 11. Phasing
 
-- **Phase 0 — spike (this proves feasibility, nothing ships):** build
-  `ansible/awx` `devel` + DAB into images on the prod1 builder; boot against a
-  scratch postgres; run one provision/launch/teardown cycle by hand.
+- **Phase 0 — spike: PASSED 2026-08-16 with two carried items** (mirror-only
+  build, gateway path) — `docs/phase0/REPORT.md`. The composed image builds,
+  boots on scratch postgres with clean migrations, and runs a successful
+  container-group job; org-deletion orphaning reproduced on devel.
 - **Phase 1 — compatibility:** CTL-001..004, CTL-010..013 — the swap is
   invisible to gateway, console, provider, driver.
 - **Phase 2 — parity:** CTL-020..031 proven feature by feature via the DO467

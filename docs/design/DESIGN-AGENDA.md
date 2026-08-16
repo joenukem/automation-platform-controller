@@ -141,8 +141,9 @@ when this suite is green — that, not upstream diff review, is the crux.
 
 1. **ADR per decision** (D-1..D-11), each with named acceptance evidence;
    PROPOSED → ACCEPTED only with the test merged.
-2. **Spike before commitment** (Phase 0): build and boot the composed stack
-   once by hand; feasibility findings feed the ADRs.
+2. **Spike before commitment** (Phase 0): DONE 2026-08-16 — see
+   `../phase0/REPORT.md`. The composed stack builds, boots, and runs jobs;
+   two settings drifts total; ADR-0001 confirmed necessary against devel.
 3. **Invariant-first testing**: the I-lists in ADRs become property tests
    before feature work starts.
 4. **Upstream curation stays subordinate**: pin SHAs, review diffs against
