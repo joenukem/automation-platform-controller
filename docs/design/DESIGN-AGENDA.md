@@ -12,6 +12,11 @@ deliverable and the acceptance evidence that closes it.
 Rule for every item: **a design is not done until its failure test is named.**
 An ADR without an acceptance test is an opinion.
 
+Companions: `PARITY-LEDGER.md` (what "parity" means, feature by feature),
+`FULL-PARITY-PLAN.md` (the costed track to full parity),
+`RISK-ASSESSMENT.md` (whether this plan is likely to succeed, and on what
+conditions).
+
 ## D-1 Domain & ownership model — DRAFTED
 
 Who owns what, and what deletion means. → `ADR-0001-organization-ownership.md`

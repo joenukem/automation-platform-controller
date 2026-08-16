@@ -19,9 +19,18 @@ from the live post-split upstream line (`ansible/awx` `devel` +
 2. matches the AAP 2.7 automation-controller feature baseline for every feature
    the platform's courses and products exercise.
 
-Out of scope: Red Hat trademarks, branding, subscription/entitlement features,
-Insights/analytics upload to Red Hat, and the `ansible-ui` web UI (banned; the
-console is `pcf-console`).
+Two parity claims are defined, and only these may be used:
+
+- **Scoped parity (release 1.0)** — every feature the platform exercises, per
+  the IN-1.0 rulings of `docs/design/PARITY-LEDGER.md`.
+- **Full parity (track F)** — the ledger's FULL clusters, sequenced and costed
+  in `docs/design/FULL-PARITY-PLAN.md`; F5 (automation mesh) is
+  demand-triggered, and until then the claim is "full parity excluding mesh".
+
+Out of scope permanently (ledger OUT rulings, each justified): Red Hat
+trademarks, branding, subscription/entitlement features, Insights/analytics
+upload to Red Hat, and the `ansible-ui` web UI (banned; the console is
+`pcf-console`).
 
 ## 2. Composition and build
 
@@ -176,7 +185,29 @@ These are the requirements our own incident evidence drives; each cites
   controller logs at default verbosity; webhook keys retrievable only via
   the authorized endpoint.
 
-## 8. Release gates (definition of done for 1.0)
+## 8. Parity governance and stewardship
+
+- **CTL-070 (P0) — the parity ledger is normative.** Every AAP 2.7 controller
+  feature carries a ruling (IN-1.0 / FULL / GATEWAY / OUT) in
+  `docs/design/PARITY-LEDGER.md`; a feature without a ruling is a defect in
+  the ledger. Releases publish ledger deltas, and every AAP 2.7 patch release
+  triggers a ledger delta review (release notes -> rulings).
+  *Proof:* CI check that release notes reference a ledger delta.
+- **CTL-071 (P0) — the Phase-0 fallback gate is pre-agreed.** Phase 0 passes
+  only if: the composed images build mirror-only, boot against scratch
+  postgres, and one provision -> launch -> teardown cycle succeeds via the
+  gateway. If it fails, the decision is taken at the gate — (a) fork 24.6.1
+  and implement ADR-0001 + lifecycle fixes on it, or (b) remain on patched
+  24.6.1 until upstream resumes releases — and recorded as an ADR. No
+  sunk-cost continuation past the gate without that ADR.
+  *Proof:* the gate report and, if failed, the decision ADR.
+- **CTL-072 (P0) — fork stewardship is priced and owned.** Standing
+  obligations from first release: monthly upstream rebase review, CVE watch
+  on all composed sources, a named owner, and a documented drop-the-fork
+  path if upstream resumes releases. An unowned fork is a release blocker.
+  *Proof:* stewardship log in this repo, checked at every release gate.
+
+## 9. Release gates (definition of done for 1.0)
 
 1. All P0 requirements proven live on a throwaway ci-k3s-vm deployment.
 2. DO467 console-pool suite (the in-scope labs) green at MAX=3, and the three
@@ -186,7 +217,7 @@ These are the requirements our own incident evidence drives; each cites
 5. `docs/parity-drivers.md` updated: every driver either closed by evidence or
    explicitly carried as a known gap with a requirement ID.
 
-## 9. Design agenda
+## 10. Design agenda
 
 The requirements above say *what*; `docs/design/DESIGN-AGENDA.md` (D-1..D-12)
 says what must be *designed* to satisfy them, and `docs/design/ADR-0001-organization-ownership.md`
@@ -194,7 +225,7 @@ is the first accepted-for-review decision (drives CTL-040..043). No CTL
 requirement in sections 5–7 starts implementation before its D-item's ADR is
 accepted.
 
-## 10. Phasing
+## 11. Phasing
 
 - **Phase 0 — spike (this proves feasibility, nothing ships):** build
   `ansible/awx` `devel` + DAB into images on the prod1 builder; boot against a
@@ -204,9 +235,13 @@ accepted.
 - **Phase 2 — parity:** CTL-020..031 proven feature by feature via the DO467
   suite (it is the platform's de-facto conformance suite).
 - **Phase 3 — lifecycle + scale:** CTL-040..052, soak, cutover rehearsal,
-  release 1.0.
+  release 1.0 (scoped parity, per the ledger's IN-1.0 set).
+- **Track F — full parity (post-1.0):** milestones F1-F4 per
+  `docs/design/FULL-PARITY-PLAN.md` (~26-32 engineer-weeks, parallelizable);
+  F5 (mesh) only on product demand. Each milestone closes its ledger cluster
+  with live tests and publishes the delta.
 
-## 11. Sources
+## 12. Sources
 
 - Upstream repositories: `ansible/awx` (devel), `ansible/django-ansible-base`,
   `ansible/dispatcherd`, `ansible/awx-plugins`, `ansible/awx_plugins.interfaces`.

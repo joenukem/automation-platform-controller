@@ -31,11 +31,20 @@ implementation details and keep their names until a separately tested migration.
 
 ## Documents
 
-- `docs/REQUIREMENTS.md` — the requirements to reach AAP 2.7 product parity,
-  with requirement IDs, priorities, and acceptance proof for each.
-- `docs/parity-drivers.md` — the verified defects and gaps in the running
-  `awx 24.6.1` deployment that motivate specific requirements, with the evidence
-  for each.
+- `docs/REQUIREMENTS.md` — the requirements (CTL-xxx) with priorities and
+  acceptance proof for each, including parity governance (CTL-070..072).
+- `docs/design/PARITY-LEDGER.md` — NORMATIVE: every AAP 2.7 controller feature
+  with an explicit ruling (IN-1.0 / FULL / GATEWAY / OUT).
+- `docs/design/FULL-PARITY-PLAN.md` — the costed milestones (F1-F5) from
+  scoped 1.0 to full parity; mesh is demand-triggered.
+- `docs/design/RISK-ASSESSMENT.md` — whether this plan is likely to deliver,
+  the two high-severity risks, and the conditions that flip the verdict.
+- `docs/design/DESIGN-AGENDA.md` — what must be designed (D-1..D-12) and why
+  upstream commit review is supply chain, not design.
+- `docs/design/ADR-0001-organization-ownership.md` — organizations as
+  aggregate roots; deletion as an observable state machine.
+- `docs/parity-drivers.md` — the verified defects in the running `awx 24.6.1`
+  deployment that motivate specific requirements, with evidence.
 
 ## Baseline facts (verified 2026-08-16)
 
