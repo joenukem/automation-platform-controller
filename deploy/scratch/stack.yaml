@@ -1,0 +1,1001 @@
+apiVersion: v1
+data:
+  awx-nginx.conf: "server {\n  listen 8052 default_server;\n  server_name _;\n  client_max_body_size\
+    \ 20m;\n\n  location /websocket/ {\n    proxy_http_version 1.1;\n    proxy_set_header\
+    \ Upgrade $http_upgrade;\n    proxy_set_header Connection \"upgrade\";\n    proxy_set_header\
+    \ Host $host;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
+    \    proxy_pass http://127.0.0.1:8051;\n  }\n\n  location /static/ {\n    alias\
+    \ /var/lib/awx/public/static/;\n  }\n\n  location /media/ {\n    alias /var/lib/awx/public/media/;\n\
+    \  }\n\n  location / {\n    include /etc/nginx/uwsgi_params;\n    uwsgi_param\
+    \ Host $host;\n    uwsgi_param X-Forwarded-For $proxy_add_x_forwarded_for;\n \
+    \   uwsgi_param HTTP_AUTHORIZATION $http_authorization;\n    uwsgi_pass 127.0.0.1:8050;\n\
+    \  }\n}\n"
+  gateway_auth.py: "import base64\nimport hashlib\nimport hmac\nimport os\nimport\
+    \ time\n\nfrom django.contrib.auth import get_user_model\nfrom rest_framework\
+    \ import authentication\nfrom rest_framework import exceptions\n\nEMPTY_BODY_SHA256\
+    \ = \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"\n\n\n\
+    class GatewayHeaderAuthentication(authentication.BaseAuthentication):\n    def\
+    \ authenticate(self, request):\n        signature = _header(request, \"HTTP_X_AWX_GATEWAY_SIGNATURE\"\
+    )\n        username = _header(request, \"HTTP_X_AWX_GATEWAY_USERNAME\")\n    \
+    \    if not signature and not username:\n            return None\n        secret\
+    \ = os.environ.get(\"AWX_GATEWAY_TRUSTED_HEADER_SIGNING_SECRET\", \"\")\n    \
+    \    if not secret:\n            raise exceptions.AuthenticationFailed(\"gateway\
+    \ trusted-header secret is not configured\")\n\n        user_id = _required_header(request,\
+    \ \"HTTP_X_AWX_GATEWAY_USER_ID\")\n        email = _header(request, \"HTTP_X_AWX_GATEWAY_EMAIL\"\
+    )\n        groups = _groups(_header(request, \"HTTP_X_AWX_GATEWAY_GROUPS\"))\n\
+    \        request_id = _required_header(request, \"HTTP_X_AWX_GATEWAY_REQUEST_ID\"\
+    )\n        issued_at = _required_header(request, \"HTTP_X_AWX_GATEWAY_ISSUED_AT\"\
+    )\n        body_sha = _header(request, \"HTTP_X_AWX_GATEWAY_BODY_SHA256\") or\
+    \ EMPTY_BODY_SHA256\n\n        _validate_issued_at(issued_at)\n        actual_body_sha\
+    \ = hashlib.sha256(request.body or b\"\").hexdigest()\n        if not hmac.compare_digest(body_sha,\
+    \ actual_body_sha):\n            raise exceptions.AuthenticationFailed(\"gateway\
+    \ body digest mismatch\")\n\n        canonical = \"\\n\".join(\n            [\n\
+    \                \"method: \" + request.method.upper(),\n                \"path:\
+    \ \" + request.get_full_path(),\n                \"request-id: \" + request_id,\n\
+    \                \"user-id: \" + user_id,\n                \"username: \" + username,\n\
+    \                \"email: \" + email,\n                \"groups: \" + \",\".join(groups),\n\
+    \                \"issued-at: \" + issued_at,\n                \"body-sha256:\
+    \ \" + body_sha,\n            ]\n        )\n        expected = base64.b64encode(\n\
+    \            hmac.new(secret.encode(\"utf-8\"), canonical.encode(\"utf-8\"), hashlib.sha256).digest()\n\
+    \        ).decode(\"ascii\")\n        if not hmac.compare_digest(signature, expected):\n\
+    \            raise exceptions.AuthenticationFailed(\"gateway signature mismatch\"\
+    )\n\n        user = _sync_user(user_id, username, email, groups)\n        return\
+    \ (user, None)\n\n\ndef _header(request, name):\n    return (request.META.get(name)\
+    \ or \"\").strip()\n\n\ndef _required_header(request, name):\n    value = _header(request,\
+    \ name)\n    if not value:\n        raise exceptions.AuthenticationFailed(\"gateway\
+    \ trusted-header request is incomplete\")\n    return value\n\n\ndef _groups(value):\n\
+    \    return sorted(group.strip() for group in value.split(\",\") if group.strip())\n\
+    \n\ndef _validate_issued_at(value):\n    try:\n        issued_at = int(value)\n\
+    \    except ValueError as exc:\n        raise exceptions.AuthenticationFailed(\"\
+    gateway issued-at is invalid\") from exc\n    now = int(time.time())\n    if issued_at\
+    \ > now + 60 or now - issued_at > 300:\n        raise exceptions.AuthenticationFailed(\"\
+    gateway signature is expired\")\n\n\ndef _sync_user(user_id, username, email,\
+    \ groups):\n    admin_groups = {\n        group.strip()\n        for group in\
+    \ os.environ.get(\"AWX_GATEWAY_ADMIN_GROUPS\", \"admins,system-administrators\"\
+    ).split(\",\")\n        if group.strip()\n    }\n    is_admin = bool(admin_groups.intersection(groups))\n\
+    \    User = get_user_model()\n    user, _ = User.objects.get_or_create(username=username,\
+    \ defaults={\"email\": email})\n    changed = False\n    if email and user.email\
+    \ != email:\n        user.email = email\n        changed = True\n    if is_admin\
+    \ and (not user.is_staff or not user.is_superuser):\n        user.is_staff = True\n\
+    \        user.is_superuser = True\n        changed = True\n    if changed:\n \
+    \       user.save(update_fields=[\"email\", \"is_staff\", \"is_superuser\"])\n\
+    \    return user\n"
+  nginx.conf: "worker_processes auto;\nerror_log /dev/stderr warn;\npid /tmp/nginx.pid;\n\
+    \nevents {\n  worker_connections 1024;\n}\n\nhttp {\n  include /etc/nginx/mime.types;\n\
+    \  default_type application/octet-stream;\n  access_log /dev/stdout;\n  sendfile\
+    \ on;\n  keepalive_timeout 65;\n  include /etc/nginx/conf.d/*.conf;\n}\n"
+  settings.py: "import os\nimport socket\nimport uuid\n\nSECRET_KEY = open('/etc/tower/SECRET_KEY',\
+    \ 'r', encoding='utf-8').read().strip()\nALLOWED_HOSTS = ['*']\nCSRF_TRUSTED_ORIGINS\
+    \ = ['https://console.prod1.local']\nCLUSTER_HOST_ID = os.environ.get('MY_POD_NAME')\
+    \ or socket.gethostname()\nSYSTEM_UUID = os.environ.get('AWX_SYSTEM_UUID') or\
+    \ str(uuid.uuid5(uuid.NAMESPACE_DNS, SECRET_KEY))\nIS_K8S = True\nAWX_AUTO_DEPROVISION_INSTANCES\
+    \ = True\n\nDATABASES = {\n    'default': {\n        'ENGINE': 'django.db.backends.postgresql',\n\
+    \        'NAME': os.environ.get('AWX_POSTGRES_DB', 'awx'),\n        'USER': os.environ.get('AWX_POSTGRES_USER',\
+    \ 'awx'),\n        'PASSWORD': os.environ.get('AWX_POSTGRES_PASSWORD', ''),\n\
+    \        'HOST': os.environ.get('AWX_POSTGRES_HOST', 'awx-controller-postgres'),\n\
+    \        'PORT': os.environ.get('AWX_POSTGRES_PORT', '5432'),\n        'ATOMIC_REQUESTS':\
+    \ True,\n    }\n}\n\nBROKER_URL = os.environ.get('AWX_REDIS_URL', 'redis://awx-controller-redis:6379/0')\n\
+    CACHES = {\n    'default': {\n        'BACKEND': 'ansible_base.lib.cache.redis_cache.DABRedisCache',\n\
+    \        'LOCATION': os.environ.get('AWX_REDIS_CACHE_URL', 'redis://awx-controller-redis:6379/1'),\n\
+    \    }\n}\nCHANNEL_LAYERS = {\n    'default': {\n        'BACKEND': 'channels_redis.core.RedisChannelLayer',\n\
+    \        'CONFIG': {\n            'hosts': [BROKER_URL],\n            'capacity':\
+    \ 10000,\n            'group_expiry': 157784760,\n        },\n    },\n}\nBROADCAST_WEBSOCKET_SECRET\
+    \ = os.environ.get('BROADCAST_WEBSOCKET_SECRET', SECRET_KEY)\nBROADCAST_WEBSOCKET_PORT\
+    \ = 8052\nBROADCAST_WEBSOCKET_PROTOCOL = 'http'\nBROADCAST_WEBSOCKET_VERIFY_CERT\
+    \ = False\nLOG_AGGREGATOR_ENABLED = False\nAWX_LOGGING_MODE = 'stdout'\nGLOBAL_JOB_EXECUTION_ENVIRONMENTS\
+    \ = [\n    {\n        'name': \"AWX EE 24.6.1\",\n        'image': \"franken-registry.example.com:5000/ansible/awx-ee:24.6.1\"\
+    ,\n    },\n]\nCONTROL_PLANE_EXECUTION_ENVIRONMENT = \"franken-registry.example.com:5000/ansible/awx-ee:24.6.1\"\
+    \nDEFAULT_EXECUTION_QUEUE_POD_SPEC_OVERRIDE = \"\"\"\nspec:\n  serviceAccountName:\
+    \ awx-controller-task\n\"\"\"\nREST_FRAMEWORK = globals().get('REST_FRAMEWORK',\
+    \ {}).copy()\nREST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES'] = (\n    'gateway_auth.GatewayHeaderAuthentication',\n\
+    \    'ansible_base.jwt_consumer.awx.auth.AwxJWTAuthentication',\n    'awx.api.authentication.SessionAuthentication',\n\
+    \    'awx.api.authentication.LoggedBasicAuthentication',\n)\n"
+kind: ConfigMap
+metadata:
+  name: awx-controller-settings
+  namespace: ctl-phase1
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: awx-controller-task
+  namespace: ctl-phase1
+  labels:
+    app: awx-controller-task
+    app.kubernetes.io/name: awx-controller
+    app.kubernetes.io/part-of: awx-web-console
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: awx-controller-task
+  namespace: ctl-phase1
+  labels:
+    app: awx-controller-task
+    app.kubernetes.io/name: awx-controller
+    app.kubernetes.io/part-of: awx-web-console
+rules:
+- apiGroups:
+  - ''
+  resources:
+  - pods
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ''
+  resources:
+  - pods/log
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - ''
+  resources:
+  - pods/attach
+  - pods/exec
+  verbs:
+  - create
+  - get
+- apiGroups:
+  - ''
+  resources:
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: awx-controller-task
+  namespace: ctl-phase1
+  labels:
+    app: awx-controller-task
+    app.kubernetes.io/name: awx-controller
+    app.kubernetes.io/part-of: awx-web-console
+subjects:
+- kind: ServiceAccount
+  name: awx-controller-task
+  namespace: ctl-phase1
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: awx-controller-task
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: awx-controller-postgres
+  namespace: ctl-phase1
+  labels:
+    app: awx-controller-postgres
+    app.kubernetes.io/part-of: awx-web-console
+spec:
+  type: ClusterIP
+  selector:
+    app: awx-controller-postgres
+  ports:
+  - name: postgres
+    port: 5432
+    targetPort: postgres
+    protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: awx-controller-redis
+  namespace: ctl-phase1
+  labels:
+    app: awx-controller-redis
+    app.kubernetes.io/part-of: awx-web-console
+spec:
+  type: ClusterIP
+  selector:
+    app: awx-controller-redis
+  ports:
+  - name: redis
+    port: 6379
+    targetPort: redis
+    protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: awx-controller
+  namespace: ctl-phase1
+  labels:
+    app: awx-controller
+    app.kubernetes.io/part-of: awx-web-console
+spec:
+  type: ClusterIP
+  selector:
+    app: awx-controller
+    component: web
+  ports:
+  - name: http
+    port: 8052
+    targetPort: 8052
+    protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: awx-controller-postgres
+  namespace: ctl-phase1
+  labels:
+    app: awx-controller-postgres
+    component: backend
+    app.kubernetes.io/name: awx-controller-postgres
+    app.kubernetes.io/part-of: awx-web-console
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: awx-controller-postgres
+  template:
+    metadata:
+      labels:
+        app: awx-controller-postgres
+        component: backend
+    spec:
+      containers:
+      - name: postgres
+        image: franken-registry.example.com:5000/postgres:15-alpine
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5432
+          name: postgres
+          protocol: TCP
+        env:
+        - name: POSTGRES_DB
+          value: awx
+        - name: POSTGRES_USER
+          value: awx
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: awx-controller-runtime
+              key: postgres-password
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - awx
+            - -d
+            - awx
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: awx-controller-redis
+  namespace: ctl-phase1
+  labels:
+    app: awx-controller-redis
+    component: backend
+    app.kubernetes.io/name: awx-controller-redis
+    app.kubernetes.io/part-of: awx-web-console
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: awx-controller-redis
+  template:
+    metadata:
+      labels:
+        app: awx-controller-redis
+        component: backend
+    spec:
+      containers:
+      - name: redis
+        image: franken-registry.example.com:5000/redis:7
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 6379
+          name: redis
+          protocol: TCP
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 250m
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: awx-controller-web
+  namespace: ctl-phase1
+  labels:
+    app: awx-controller
+    component: web
+    app.kubernetes.io/name: awx-controller
+    app.kubernetes.io/part-of: awx-web-console
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: awx-controller
+      component: web
+  template:
+    metadata:
+      labels:
+        app: awx-controller
+        component: web
+    spec:
+      initContainers:
+      - name: wait-postgres
+        image: franken-registry.example.com:5000/postgres:15-alpine
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - until pg_isready -h awx-controller-postgres -U "$AWX_POSTGRES_USER" -d "$AWX_POSTGRES_DB";
+          do sleep 2; done
+        env:
+        - name: DJANGO_SETTINGS_MODULE
+          value: awx.settings.production
+        - name: AWX_SETTINGS_FILE
+          value: /etc/tower/settings.py
+        - name: AWX_SETTINGS_DIR
+          value: /etc/tower/conf.d
+        - name: AWX_LOGGING_MODE
+          value: stdout
+        - name: AWX_POSTGRES_HOST
+          value: awx-controller-postgres
+        - name: AWX_POSTGRES_PORT
+          value: '5432'
+        - name: AWX_POSTGRES_DB
+          value: awx
+        - name: AWX_POSTGRES_USER
+          value: awx
+        - name: AWX_POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: awx-controller-runtime
+              key: postgres-password
+        - name: AWX_REDIS_URL
+          value: redis://awx-controller-redis:6379/0
+        - name: AWX_REDIS_CACHE_URL
+          value: redis://awx-controller-redis:6379/1
+        - name: PYTHONPATH
+          value: /etc/tower
+        - name: AWX_GATEWAY_TRUSTED_HEADER_SIGNING_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: awx-gateway-runtime
+              key: trusted-header-signing-secret
+        - name: AWX_GATEWAY_ADMIN_GROUPS
+          value: admins,system-administrators
+        - name: BROADCAST_WEBSOCKET_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: awx-controller-runtime
+              key: secret-key
+        - name: MY_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: MY_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: MY_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+      containers:
+      - name: awx-web
+        image: franken-registry.example.com:5000/automation-platform/controller:0.0.1-phase0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /usr/bin/launch_awx_web.sh
+        ports:
+        - containerPort: 8052
+          name: http
+          protocol: TCP
+        env:
+        - name: DJANGO_SETTINGS_MODULE
+          value: awx.settings.production
+        - name: AWX_SETTINGS_FILE
+          value: /etc/tower/settings.py
+        - name: AWX_SETTINGS_DIR
+          value: /etc/tower/conf.d
+        - name: AWX_LOGGING_MODE
+          value: stdout
+        - name: AWX_POSTGRES_HOST
+          value: awx-controller-postgres
+        - name: AWX_POSTGRES_PORT
+          value: '5432'
+        - name: AWX_POSTGRES_DB
+          value: awx
+        - name: AWX_POSTGRES_USER
+          value: awx
+        - name: AWX_POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: awx-controller-runtime
+              key: postgres-password
+        - name: AWX_REDIS_URL
+          value: redis://awx-controller-redis:6379/0
+        - name: AWX_REDIS_CACHE_URL
+          value: redis://awx-controller-redis:6379/1
+        - name: PYTHONPATH
+          value: /etc/tower
+        - name: AWX_GATEWAY_TRUSTED_HEADER_SIGNING_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: awx-gateway-runtime
+              key: trusted-header-signing-secret
+        - name: AWX_GATEWAY_ADMIN_GROUPS
+          value: admins,system-administrators
+        - name: BROADCAST_WEBSOCKET_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: awx-controller-runtime
+              key: secret-key
+        - name: MY_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: MY_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: MY_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        volumeMounts:
+        - name: awx-controller-settings
+          mountPath: /etc/tower/settings.py
+          subPath: settings.py
+          readOnly: true
+        - name: awx-controller-settings
+          mountPath: /etc/tower/gateway_auth.py
+          subPath: gateway_auth.py
+          readOnly: true
+        - name: awx-controller-settings
+          mountPath: /etc/nginx/conf.d/awx.conf
+          subPath: awx-nginx.conf
+          readOnly: true
+        - name: awx-controller-settings
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+        - name: awx-controller-secret
+          mountPath: /etc/tower/SECRET_KEY
+          subPath: SECRET_KEY
+          readOnly: true
+        readinessProbe:
+          exec:
+            command:
+            - python3
+            - -c
+            - "import http.client, json, sys\nconn = http.client.HTTPConnection(\"\
+              127.0.0.1\", 8052, timeout=5)\nconn.request(\"GET\", \"/api/v2/ping/\"\
+              )\nresp = conn.getresponse()\nbody = resp.read()\nif resp.status !=\
+              \ 200:\n    sys.exit(1)\ntry:\n    json.loads(body.decode(\"utf-8\"\
+              ))\nexcept Exception:\n    sys.exit(1)\n"
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          failureThreshold: 12
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+          requests:
+            cpu: 200m
+            memory: 512Mi
+      volumes:
+      - name: awx-controller-settings
+        configMap:
+          name: awx-controller-settings
+      - name: awx-controller-secret
+        secret:
+          secretName: awx-controller-runtime
+          items:
+          - key: secret-key
+            path: SECRET_KEY
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: awx-controller-task
+  namespace: ctl-phase1
+  labels:
+    app: awx-controller-task
+    component: task
+    app.kubernetes.io/name: awx-controller
+    app.kubernetes.io/part-of: awx-web-console
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: awx-controller-task
+      component: task
+  template:
+    metadata:
+      labels:
+        app: awx-controller-task
+        component: task
+    spec:
+      serviceAccountName: awx-controller-task
+      initContainers:
+      - name: init-receptor-runtime
+        image: franken-registry.example.com:5000/ansible/awx-ee:24.6.1
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 0
+        command:
+        - sh
+        - -c
+        - "set -eu\nmkdir -p /etc/receptor/tls/ca /var/run/receptor\nreceptor --cert-makereq\
+          \ commonname=\"${MY_POD_NAME}-work\" bits=2048 outreq=/etc/receptor/work.csr\
+          \ outkey=/etc/receptor/work_private_key.pem\nreceptor --cert-init commonname=\"\
+          ${MY_POD_NAME}-mesh-ca\" bits=2048 outcert=/etc/receptor/tls/ca/mesh-CA.crt\
+          \ outkey=/etc/receptor/tls/ca/mesh-CA.key\nreceptor --cert-makereq commonname=\"\
+          ${MY_POD_NAME}\" bits=2048 nodeid=\"${MY_POD_NAME}\" outreq=/etc/receptor/tls/receptor.csr\
+          \ outkey=/etc/receptor/tls/receptor.key\nreceptor --cert-signreq req=/etc/receptor/tls/receptor.csr\
+          \ cacert=/etc/receptor/tls/ca/mesh-CA.crt cakey=/etc/receptor/tls/ca/mesh-CA.key\
+          \ outcert=/etc/receptor/tls/receptor.crt verify=true\ncat > /etc/receptor/receptor.conf\
+          \ <<EOF\n- local-only:\n- log-level: info\n- node:\n    firewallrules:\n\
+          \    - action: reject\n      tonode: ${MY_POD_NAME}\n      toservice: control\n\
+          - control-service:\n    service: control\n    filename: /var/run/receptor/receptor.sock\n\
+          \    permissions: '0660'\n- work-command:\n    worktype: local\n    command:\
+          \ ansible-runner\n    params: worker\n    allowruntimeparams: true\n- work-signing:\n\
+          \    privatekey: /etc/receptor/work_private_key.pem\n    tokenexpiration:\
+          \ 1m\n- work-kubernetes:\n    worktype: kubernetes-runtime-auth\n    authmethod:\
+          \ runtime\n    allowruntimeauth: true\n    allowruntimepod: true\n    allowruntimeparams:\
+          \ true\n- work-kubernetes:\n    worktype: kubernetes-incluster-auth\n  \
+          \  authmethod: incluster\n    allowruntimeauth: true\n    allowruntimepod:\
+          \ true\n    allowruntimeparams: true\n- tls-client:\n    name: tlsclient\n\
+          \    rootcas: /etc/receptor/tls/ca/mesh-CA.crt\n    cert: /etc/receptor/tls/receptor.crt\n\
+          \    key: /etc/receptor/tls/receptor.key\n    mintls13: false\nEOF\nchown\
+          \ -R 1000:0 /etc/receptor /var/run/receptor || true\nchmod -R 0770 /etc/receptor\
+          \ /var/run/receptor\n"
+        env:
+        - name: MY_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        volumeMounts:
+        - name: receptor-config
+          mountPath: /etc/receptor
+        - name: receptor-run
+          mountPath: /var/run/receptor
+      - name: init-projects-dir
+        image: franken-registry.example.com:5000/ansible/awx-ee:24.6.1
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 0
+        command:
+        - sh
+        - -c
+        - mkdir -p /var/lib/awx/projects /var/lib/awx/job_status && chown -R 1000:0
+          /var/lib/awx/projects /var/lib/awx/job_status && chmod -R 0775 /var/lib/awx/projects
+          /var/lib/awx/job_status
+        volumeMounts:
+        - name: awx-projects
+          mountPath: /var/lib/awx/projects
+        - name: awx-job-status
+          mountPath: /var/lib/awx/job_status
+      - name: wait-postgres
+        image: franken-registry.example.com:5000/postgres:15-alpine
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - until pg_isready -h awx-controller-postgres -U "$AWX_POSTGRES_USER" -d "$AWX_POSTGRES_DB";
+          do sleep 2; done
+        env:
+        - name: DJANGO_SETTINGS_MODULE
+          value: awx.settings.production
+        - name: AWX_SETTINGS_FILE
+          value: /etc/tower/settings.py
+        - name: AWX_SETTINGS_DIR
+          value: /etc/tower/conf.d
+        - name: AWX_LOGGING_MODE
+          value: stdout
+        - name: AWX_POSTGRES_HOST
+          value: awx-controller-postgres
+        - name: AWX_POSTGRES_PORT
+          value: '5432'
+        - name: AWX_POSTGRES_DB
+          value: awx
+        - name: AWX_POSTGRES_USER
+          value: awx
+        - name: AWX_POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: awx-controller-runtime
+              key: postgres-password
+        - name: AWX_REDIS_URL
+          value: redis://awx-controller-redis:6379/0
+        - name: AWX_REDIS_CACHE_URL
+          value: redis://awx-controller-redis:6379/1
+        - name: PYTHONPATH
+          value: /etc/tower
+        - name: AWX_GATEWAY_TRUSTED_HEADER_SIGNING_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: awx-gateway-runtime
+              key: trusted-header-signing-secret
+        - name: AWX_GATEWAY_ADMIN_GROUPS
+          value: admins,system-administrators
+        - name: BROADCAST_WEBSOCKET_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: awx-controller-runtime
+              key: secret-key
+        - name: MY_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: MY_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: MY_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+      containers:
+      - name: receptor
+        image: franken-registry.example.com:5000/ansible/awx-ee:24.6.1
+        imagePullPolicy: IfNotPresent
+        command:
+        - receptor
+        - --config
+        - /etc/receptor/receptor.conf
+        env:
+        - name: HOME
+          value: /var/lib/receptor
+        volumeMounts:
+        - name: receptor-config
+          mountPath: /etc/receptor
+        - name: receptor-run
+          mountPath: /var/run/receptor
+        - name: receptor-home
+          mountPath: /var/lib/receptor
+        - name: awx-projects
+          mountPath: /var/lib/awx/projects
+        - name: awx-job-status
+          mountPath: /var/lib/awx/job_status
+        resources:
+          limits:
+            cpu: 250m
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+      - name: awx-task
+        image: franken-registry.example.com:5000/automation-platform/controller:0.0.1-phase0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /usr/bin/launch_awx_task.sh
+        env:
+        - name: DJANGO_SETTINGS_MODULE
+          value: awx.settings.production
+        - name: AWX_SETTINGS_FILE
+          value: /etc/tower/settings.py
+        - name: AWX_SETTINGS_DIR
+          value: /etc/tower/conf.d
+        - name: AWX_LOGGING_MODE
+          value: stdout
+        - name: AWX_POSTGRES_HOST
+          value: awx-controller-postgres
+        - name: AWX_POSTGRES_PORT
+          value: '5432'
+        - name: AWX_POSTGRES_DB
+          value: awx
+        - name: AWX_POSTGRES_USER
+          value: awx
+        - name: AWX_POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: awx-controller-runtime
+              key: postgres-password
+        - name: AWX_REDIS_URL
+          value: redis://awx-controller-redis:6379/0
+        - name: AWX_REDIS_CACHE_URL
+          value: redis://awx-controller-redis:6379/1
+        - name: PYTHONPATH
+          value: /etc/tower
+        - name: AWX_GATEWAY_TRUSTED_HEADER_SIGNING_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: awx-gateway-runtime
+              key: trusted-header-signing-secret
+        - name: AWX_GATEWAY_ADMIN_GROUPS
+          value: admins,system-administrators
+        - name: BROADCAST_WEBSOCKET_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: awx-controller-runtime
+              key: secret-key
+        - name: MY_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: MY_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: MY_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        volumeMounts:
+        - name: awx-controller-settings
+          mountPath: /etc/tower/settings.py
+          subPath: settings.py
+          readOnly: true
+        - name: awx-controller-settings
+          mountPath: /etc/tower/gateway_auth.py
+          subPath: gateway_auth.py
+          readOnly: true
+        - name: awx-controller-settings
+          mountPath: /etc/nginx/conf.d/awx.conf
+          subPath: awx-nginx.conf
+          readOnly: true
+        - name: awx-controller-settings
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+        - name: awx-controller-secret
+          mountPath: /etc/tower/SECRET_KEY
+          subPath: SECRET_KEY
+          readOnly: true
+        - name: receptor-config
+          mountPath: /etc/receptor
+        - name: receptor-run
+          mountPath: /var/run/receptor
+        - name: awx-projects
+          mountPath: /var/lib/awx/projects
+        - name: awx-job-status
+          mountPath: /var/lib/awx/job_status
+        readinessProbe:
+          exec:
+            command:
+            - python3
+            - -c
+            - "import os, sys\nwanted = {\n    \"awx-manage run_dispatcher\": False,\n\
+              \    \"awx-manage run_callback_receiver\": False,\n    \"awx-manage\
+              \ run_wsrelay\": False,\n}\nfor pid in os.listdir(\"/proc\"):\n    if\
+              \ not pid.isdigit():\n        continue\n    try:\n        raw = open(f\"\
+              /proc/{pid}/cmdline\", \"rb\").read()\n    except OSError:\n       \
+              \ continue\n    cmd = raw.replace(b\"\\0\", b\" \").decode(\"utf-8\"\
+              , \"ignore\")\n    for needle in wanted:\n        if needle in cmd:\n\
+              \            wanted[needle] = True\nsys.exit(0 if all(wanted.values())\
+              \ else 1)\n"
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          failureThreshold: 45
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+          requests:
+            cpu: 200m
+            memory: 512Mi
+      volumes:
+      - name: awx-controller-settings
+        configMap:
+          name: awx-controller-settings
+      - name: awx-controller-secret
+        secret:
+          secretName: awx-controller-runtime
+          items:
+          - key: secret-key
+            path: SECRET_KEY
+      - name: receptor-config
+        emptyDir: {}
+      - name: receptor-run
+        emptyDir: {}
+      - name: receptor-home
+        emptyDir: {}
+      - name: awx-projects
+        emptyDir: {}
+      - name: awx-job-status
+        emptyDir: {}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: awx-controller-migrate
+  namespace: ctl-phase1
+  labels:
+    app: awx-controller
+    component: migration
+    app.kubernetes.io/name: awx-controller
+    app.kubernetes.io/part-of: awx-web-console
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: awx-controller
+        component: migration
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+      - name: wait-postgres
+        image: franken-registry.example.com:5000/postgres:15-alpine
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - until pg_isready -h awx-controller-postgres -U "$AWX_POSTGRES_USER" -d "$AWX_POSTGRES_DB";
+          do sleep 2; done
+        env:
+        - name: DJANGO_SETTINGS_MODULE
+          value: awx.settings.production
+        - name: AWX_SETTINGS_FILE
+          value: /etc/tower/settings.py
+        - name: AWX_SETTINGS_DIR
+          value: /etc/tower/conf.d
+        - name: AWX_LOGGING_MODE
+          value: stdout
+        - name: AWX_POSTGRES_HOST
+          value: awx-controller-postgres
+        - name: AWX_POSTGRES_PORT
+          value: '5432'
+        - name: AWX_POSTGRES_DB
+          value: awx
+        - name: AWX_POSTGRES_USER
+          value: awx
+        - name: AWX_POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: awx-controller-runtime
+              key: postgres-password
+        - name: AWX_REDIS_URL
+          value: redis://awx-controller-redis:6379/0
+        - name: AWX_REDIS_CACHE_URL
+          value: redis://awx-controller-redis:6379/1
+        - name: PYTHONPATH
+          value: /etc/tower
+        - name: AWX_GATEWAY_TRUSTED_HEADER_SIGNING_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: awx-gateway-runtime
+              key: trusted-header-signing-secret
+        - name: AWX_GATEWAY_ADMIN_GROUPS
+          value: admins,system-administrators
+        - name: BROADCAST_WEBSOCKET_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: awx-controller-runtime
+              key: secret-key
+        - name: MY_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: MY_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: MY_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+      containers:
+      - name: migrate
+        image: franken-registry.example.com:5000/automation-platform/controller:0.0.1-phase0
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - 'set -eu
+
+          awx-manage migrate --noinput
+
+          awx-manage register_default_execution_environments
+
+          '
+        env:
+        - name: DJANGO_SETTINGS_MODULE
+          value: awx.settings.production
+        - name: AWX_SETTINGS_FILE
+          value: /etc/tower/settings.py
+        - name: AWX_SETTINGS_DIR
+          value: /etc/tower/conf.d
+        - name: AWX_LOGGING_MODE
+          value: stdout
+        - name: AWX_POSTGRES_HOST
+          value: awx-controller-postgres
+        - name: AWX_POSTGRES_PORT
+          value: '5432'
+        - name: AWX_POSTGRES_DB
+          value: awx
+        - name: AWX_POSTGRES_USER
+          value: awx
+        - name: AWX_POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: awx-controller-runtime
+              key: postgres-password
+        - name: AWX_REDIS_URL
+          value: redis://awx-controller-redis:6379/0
+        - name: AWX_REDIS_CACHE_URL
+          value: redis://awx-controller-redis:6379/1
+        - name: PYTHONPATH
+          value: /etc/tower
+        - name: AWX_GATEWAY_TRUSTED_HEADER_SIGNING_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: awx-gateway-runtime
+              key: trusted-header-signing-secret
+        - name: AWX_GATEWAY_ADMIN_GROUPS
+          value: admins,system-administrators
+        - name: BROADCAST_WEBSOCKET_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: awx-controller-runtime
+              key: secret-key
+        - name: MY_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: MY_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: MY_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        volumeMounts:
+        - name: awx-controller-settings
+          mountPath: /etc/tower/settings.py
+          subPath: settings.py
+          readOnly: true
+        - name: awx-controller-settings
+          mountPath: /etc/tower/gateway_auth.py
+          subPath: gateway_auth.py
+          readOnly: true
+        - name: awx-controller-settings
+          mountPath: /etc/nginx/conf.d/awx.conf
+          subPath: awx-nginx.conf
+          readOnly: true
+        - name: awx-controller-settings
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+        - name: awx-controller-secret
+          mountPath: /etc/tower/SECRET_KEY
+          subPath: SECRET_KEY
+          readOnly: true
+      volumes:
+      - name: awx-controller-settings
+        configMap:
+          name: awx-controller-settings
+      - name: awx-controller-secret
+        secret:
+          secretName: awx-controller-runtime
+          items:
+          - key: secret-key
+            path: SECRET_KEY

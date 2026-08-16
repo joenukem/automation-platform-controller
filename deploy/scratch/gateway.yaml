@@ -1,0 +1,282 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: awx-gateway-oidc-config
+  namespace: ctl-phase1
+  labels:
+    app: awx-gateway
+    component: oidc
+    app.kubernetes.io/part-of: awx-web-console
+data:
+  oidc.yaml: "# Gateway OIDC validation config (BASE_DOMAIN=prod1.local)\nissuer:\
+    \ https://dex.prod1.local\nclient_id_browser: awx-web-console\nclient_id_gateway:\
+    \ awx-gateway\njwks_url: https://dex.prod1.local/keys\njwks_refresh_interval:\
+    \ 5m\nvalidate:\n  signature: true\n  issuer: true\n  audience: true\n  expiry:\
+    \ true\n  not_before: true\n  nonce: true\nscopes:\n  - openid\n  - profile\n\
+    \  - email\n  - groups\n  - controller:*\n  - hub:*\n  - eda:*\ntrusted_identity_headers:\n\
+    \  upstream_marker: X-Trusted-Proxy\n  signature: X-Trusted-Signature\n  timestamp:\
+    \ X-Trusted-Timestamp\n  key_id: Gateway-Signature-Key-Id\n  subject: X-Dex-Subject\n\
+    \  preferred_username: X-Dex-Preferred-Username\n  email: X-Dex-Email\n  groups:\
+    \ X-Dex-Groups\n  scopes: X-Dex-Scopes\n  forwarded_user: X-Forwarded-User\n \
+    \ forwarded_groups: X-Forwarded-Groups\n"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: awx-gateway
+  namespace: ctl-phase1
+  labels:
+    app: awx-gateway
+    app.kubernetes.io/part-of: awx-web-console
+spec:
+  type: ClusterIP
+  selector:
+    app: awx-gateway
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: awx-gateway-postgres
+  namespace: ctl-phase1
+  labels:
+    app: awx-gateway-postgres
+    app.kubernetes.io/part-of: awx-web-console
+spec:
+  type: ClusterIP
+  selector:
+    app: awx-gateway-postgres
+  ports:
+  - name: postgres
+    port: 5432
+    targetPort: postgres
+    protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: awx-gateway
+  namespace: ctl-phase1
+  labels:
+    app: awx-gateway
+    component: oidc
+    app.kubernetes.io/name: awx-gateway
+    app.kubernetes.io/part-of: awx-web-console
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: awx-gateway
+  template:
+    metadata:
+      labels:
+        app: awx-gateway
+        component: oidc
+    spec:
+      initContainers:
+      - name: wait-gateway-postgres
+        image: franken-registry.example.com:5000/postgres:15-alpine
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -ec
+        args:
+        - "until pg_isready -h awx-gateway-postgres -p 5432 -U \"$POSTGRES_USER\"\
+          \ -d \"$POSTGRES_DB\"; do\n  sleep 2\ndone\n"
+        env:
+        - name: POSTGRES_DB
+          value: awx_gateway
+        - name: POSTGRES_USER
+          value: awx_gateway
+      containers:
+      - name: awx-gateway
+        image: franken-registry.example.com:5000/awx-gateway:0.1.0-aap4
+        imagePullPolicy: IfNotPresent
+        args:
+        - --oidc-config=/etc/awx-gateway/oidc.yaml
+        env:
+        - name: AWX_GATEWAY_LISTEN_ADDR
+          value: :8080
+        - name: AWX_GATEWAY_PUBLIC_BASE_URL
+          value: https://console.prod1.local
+        - name: AWX_GATEWAY_ALLOWED_ORIGINS
+          value: https://console.prod1.local,http://awx-gateway:8080,http://awx-gateway.automation-platform.svc.cluster.local:8080
+        - name: AWX_GATEWAY_AWX_UPSTREAM_URL
+          value: http://awx-controller:8052
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: awx-gateway-runtime
+              key: database-url
+        - name: AWX_GATEWAY_HUB_UPSTREAM_URL
+          value: http://galaxy-hub:80
+        - name: AWX_GATEWAY_HUB_UPSTREAM_PREFIX
+          value: /api/galaxy/v3
+        - name: AWX_GATEWAY_EDA_UPSTREAM_URL
+          value: http://eda-api.eda:8000
+        - name: AWX_GATEWAY_EDA_UPSTREAM_PREFIX
+          value: /api/eda/v1
+        - name: AWX_GATEWAY_TRUSTED_HEADER_SIGNING_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: awx-gateway-runtime
+              key: trusted-header-signing-secret
+        - name: AWX_GATEWAY_SESSION_COOKIE_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: awx-gateway-runtime
+              key: session-cookie-secret
+        - name: AWX_GATEWAY_DEV_MODE
+          value: 'false'
+        - name: AWX_GATEWAY_SESSION_COOKIE_SECURE
+          value: 'false'
+        - name: AWX_GATEWAY_OAUTH_SIGNING_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: awx-gateway-signing-key
+              key: key-id
+        - name: AWX_GATEWAY_OAUTH_SIGNING_KEY_FILE
+          value: /etc/awx-gateway/oauth/signing-key.pem
+        - name: AWX_GATEWAY_TELEMETRY_UPSTREAM_URL
+          value: http://atel-awx-telemetry-agent-ingest:8080
+        - name: AWX_GATEWAY_TELEMETRY_UPSTREAM_PREFIX
+          value: /api/telemetry/v1
+        - name: AWX_GATEWAY_AGENT_UPSTREAM_URL
+          value: http://atel-awx-telemetry-agent-agent:8080
+        - name: AWX_GATEWAY_AGENT_UPSTREAM_PREFIX
+          value: /api/agent/v1
+        - name: AWX_GATEWAY_LOCAL_USERS_FILE
+          value: /etc/awx-gateway/identity/users.json
+        - name: AWX_GATEWAY_OIDC_ISSUER_URL
+          value: https://dex.prod1.local
+        - name: AWX_GATEWAY_OIDC_CLIENT_ID
+          value: awx-gateway
+        - name: AWX_GATEWAY_OIDC_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: awx-gateway-runtime
+              key: gateway-oidc-client-secret
+        - name: AWX_GATEWAY_OIDC_REDIRECT_URI
+          value: https://console.prod1.local/api/gateway/v1/oidc/callback
+        - name: AWX_GATEWAY_OIDC_SCOPES
+          value: openid profile email groups
+        - name: AWX_GATEWAY_OIDC_USERNAME_CLAIM
+          value: preferred_username
+        - name: AWX_GATEWAY_OIDC_GROUPS_CLAIM
+          value: groups
+        - name: AWX_GATEWAY_OIDC_EMAIL_CLAIM
+          value: email
+        - name: AWX_GATEWAY_AWX_CA_FILE
+          value: /etc/awx-gateway-oidc-ca/ca.crt
+        ports:
+        - containerPort: 8080
+          name: http
+        volumeMounts:
+        - name: oidc-config
+          mountPath: /etc/awx-gateway
+          readOnly: true
+        - name: oauth-signing-key
+          mountPath: /etc/awx-gateway/oauth
+          readOnly: true
+        - name: local-users
+          mountPath: /etc/awx-gateway/identity
+          readOnly: true
+        - name: oidc-ca
+          mountPath: /etc/awx-gateway-oidc-ca
+          readOnly: true
+        readinessProbe:
+          httpGet:
+            path: /api/gateway/v1/services
+            port: 8080
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 250m
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+      volumes:
+      - name: oidc-config
+        configMap:
+          name: awx-gateway-oidc-config
+      - name: oauth-signing-key
+        secret:
+          secretName: awx-gateway-signing-key
+          items:
+          - key: signing-key
+            path: signing-key.pem
+      - name: local-users
+        secret:
+          secretName: awx-gateway-local-users
+          items:
+          - key: users.json
+            path: users.json
+      - name: oidc-ca
+        secret:
+          secretName: awx-dex-tls-secret
+          items:
+          - key: ca.crt
+            path: ca.crt
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: awx-gateway-postgres
+  namespace: ctl-phase1
+  labels:
+    app: awx-gateway-postgres
+    component: gateway-database
+    app.kubernetes.io/name: awx-gateway-postgres
+    app.kubernetes.io/part-of: awx-web-console
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: awx-gateway-postgres
+  template:
+    metadata:
+      labels:
+        app: awx-gateway-postgres
+        component: gateway-database
+    spec:
+      containers:
+      - name: postgres
+        image: franken-registry.example.com:5000/postgres:15-alpine
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5432
+          name: postgres
+          protocol: TCP
+        env:
+        - name: POSTGRES_DB
+          value: awx_gateway
+        - name: POSTGRES_USER
+          value: awx_gateway
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: awx-gateway-runtime
+              key: postgres-password
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - awx_gateway
+            - -d
+            - awx_gateway
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 250m
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
