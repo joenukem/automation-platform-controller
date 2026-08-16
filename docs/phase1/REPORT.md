@@ -1,7 +1,7 @@
 # Phase 1 Report — compatibility (in progress)
 
 Date: 2026-08-16 · Targets: CTL-010, CTL-011, CTL-012, CTL-013
-Status: **3 of 4 proven; CTL-013 (migration rehearsal) open**
+Status: **COMPLETE — all four targets proven**
 
 ## CTL-010 — api-surface.lock: DONE, replay 49/53
 
@@ -57,11 +57,22 @@ Zero provider code changes. One environmental prerequisite surfaced: the
 platform seed users (`bob`, `alice`) must exist before org-member grants —
 true on production, seeded by hand on scratch.
 
-## CTL-013 — migration rehearsal: NOT STARTED
+## CTL-013 — migration rehearsal: PASSED
 
-Empty-database boot is proven (Phase 0); the rehearsal against a copy of the
-prod1 database is the remaining Phase 1 item, and the riskiest (24.6.1 →
-devel crosses the release pause).
+Dumped the production database (235 MB; 1 org, 847 jobs, 41 users — the
+inventory/template tables were empty because the sweeper had just run and no
+sessions were live), restored into the scratch postgres, and ran the devel
+line's migrations over it: **41 migrations applied cleanly, idempotent on
+rerun** ("No migrations to apply"). Integrity after: counts preserved
+exactly, DAB seeded 33 role definitions from the data migration, the newest
+job record (3820) readable with its status and name, and the API serves the
+migrated history (`count: 847`). The 24.6.1 -> devel migration path crosses
+the release pause intact on our real data.
+
+One caveat for the cutover plan: this dump had no live inventories,
+templates, or sessions in flight. The cutover rehearsal should be repeated
+once against a dump taken DURING a busy CI window so the migration is proven
+over live session rows too.
 
 ## Scratch environment
 
