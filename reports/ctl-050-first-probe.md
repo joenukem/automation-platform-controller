@@ -37,3 +37,12 @@ another session reset the content emptyDir mid-run and all six labs 404'd
 for hours — CI runs MUST deploy content immediately before dispatch, and a
 sudden all-labs-404 pattern means content reset, never lab failure.
 
+## Patch 0003 result
+
+`/api/v2/jobs/` (20-row page, warm, in-process): **33 -> 13 SQL queries**,
+~66ms steady. The 20x per-row `execution_environment` lookup was the last
+N+1 — fixed in both `JobAccess.select_related` and
+`UnifiedJobAccess.prefetch_related`. Deployed as `0.0.2-gb549851aae`;
+tripwire exact (1232/13/116); ex467-06 green serially after the (recurring,
+unrelated) content-reset was re-deployed.
+

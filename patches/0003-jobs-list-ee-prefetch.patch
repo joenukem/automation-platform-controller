@@ -1,0 +1,37 @@
+From: Automation Platform controller <controller@pipefail.dev>
+Subject: [PATCH 0003] prefetch execution_environment on the unified jobs list
+
+Implements: D-4 (CTL-052) — measured with the profiling in
+reports/ctl-050-first-probe.md follow-up: the jobs list view ran 33 SQL
+queries per 20-row page, 20 of them identical per-row execution_environment
+lookups from summary_fields. Adding execution_environment to JobAccess.select_related (the class behind
+/api/v2/jobs/) and UnifiedJobAccess.prefetch_related removes the last N+1 on
+the hottest list endpoints. (The 424ms "idle list latency" previously attributed
+to serialization turned out to be Basic-auth PBKDF2 per request — by design;
+the console's trusted-header path does not pay it.)
+
+Tested by: build/test.sh baseline (no test-count change expected) and the
+before/after query-count measurement on prod1.
+
+diff --git a/awx/main/access.py b/awx/main/access.py
+index e3410b2..9534af8 100644
+--- a/awx/main/access.py
++++ b/awx/main/access.py
+@@ -1660,6 +1660,9 @@ class JobAccess(BaseAccess):
+         'inventory',
+         'project',
+         'project_update',
++        # summary_fields serializes the EE per row; without this it is the one
++        # remaining N+1 on the jobs list (20 extra queries per page).
++        'execution_environment',
+     )
+     prefetch_related = (
+         'organization',
+@@ -2489,6 +2492,7 @@ class UnifiedJobAccess(BaseAccess):
+         'unified_job_template',
+         'instance_group',
+         'credentials__credential_type',
++        'execution_environment',
+         Prefetch('labels', queryset=Label.objects.all().order_by('name')),
+     )
+ 
