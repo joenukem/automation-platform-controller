@@ -1,0 +1,14 @@
+[notice] A new release of pip is available: 25.3 -> 26.2.1
+[notice] To update, run: /var/lib/awx/venv/awx/bin/python3.12 -m pip install --upgrade pip
+ERROR awx/main/tests/unit/test_tasks.py::TestGenericRun::test_awx_task_env - ...
+ERROR awx/main/tests/unit/test_tasks.py::TestAdhocRun::test_options_jinja_usage
+ERROR awx/main/tests/unit/test_tasks.py::TestAdhocRun::test_created_by_extra_vars
+ERROR awx/main/tests/unit/test_tasks.py::TestJobCredentials::test_net_credentials[True-1]
+ERROR awx/main/tests/unit/test_tasks.py::TestJobCredentials::test_net_credentials[False-0]
+ERROR awx/main/tests/unit/test_tasks.py::TestJobCredentials::test_net_credentials[None-0]
+ERROR awx/main/tests/unit/test_tasks.py::TestJobCredentials::test_awx_task_env
+ERROR awx/main/tests/unit/test_tasks.py::TestProjectUpdateRefspec::test_refspec_with_allow_override_includes_plus_prefix
+ERROR awx/main/tests/unit/test_tasks.py::TestProjectUpdateRefspec::test_custom_refspec_not_overridden
+ERROR awx/main/tests/unit/test_tasks.py::TestProjectUpdateRefspec::test_no_refspec_without_allow_override
+ERROR awx/main/tests/unit/test_tasks.py::TestGenericRun::test_generic_failure
+13 failed, 1233 passed, 1 xfailed, 116 errors in 19.74s

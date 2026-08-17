@@ -1,5 +1,12 @@
 # CTL-002 — egress-free release build: status and completion plan
 
+> **CLOSED 2026-08-16.** The vendored egress-free build is proven end-to-end:
+> `buildah bud --network none --pull=never` builds `awx-25.0.0.dev0` green from
+> the vendor bundle alone, and the tripwire on that image matches the
+> egress-built baseline (1233 passed). Full acceptance evidence and the
+> mechanism write-up are in **reports/ctl-002-airgap-acceptance.md**. The
+> historical plan below is retained for context.
+
 ## Done (provable)
 
 - **Base container images mirrored.** `quay.io/centos/centos:stream9` and

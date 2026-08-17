@@ -64,5 +64,16 @@ cannot, and to hand it back the moment it can.
 |---|---|---|---|
 | 2026-08-16 | initial pin (Phase 0) | — → awx `3fea070`, DAB `f90ed8a`, plugins `7c6a7cf`, dispatcherd `2026.3.25` | Phase 0 PASSED |
 | 2026-08-17 | patch queue 0001–0006 shipped on the pinned base | (no source bump) | tripwire 1233; live-proven |
+| 2026-08-16 | CTL-002 egress-free build closed | (no source bump) | `--network none` build green; airgap image tripwire 1233 (== baseline); reports/ctl-002-airgap-acceptance.md |
 
 _Next scheduled rebase review: 2026-09 (first week)._
+
+## Airgap capture note (CTL-002)
+
+The vendor bundle (`automation-platform/vendor-capture:full`) is keyed to this
+`sources.lock`. **At each monthly rebase, re-run `build/vendor/Dockerfile.capture`
+(egress allowed)** so the wheels/RPMs track the new pins — a stale bundle silently
+builds the old line. The offline render (`VENDORED=1`) and the `--network none`
+build are then unchanged. See reports/ctl-002-airgap-acceptance.md for the exact
+failure modes to expect if a capture is incomplete (build-backends, git-package
+wheels, exact local-version pins).

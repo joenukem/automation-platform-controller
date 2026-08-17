@@ -15,7 +15,15 @@ RUN mkdir -p /vendor/wheels && python3.12 -m pip install -U pip && \
     (cat requirements/requirements.txt requirements/requirements_git.txt | \
      python3.12 -m pip download -d /vendor/wheels -r /dev/stdin || \
      echo "NOTE: some source-only pkgs may need --no-binary at install time") && \
-    python3.12 -m pip download -d /vendor/wheels virtualenv supervisor dumb-init
+    python3.12 -m pip download -d /vendor/wheels virtualenv supervisor dumb-init && \
+    python3.12 -m pip download -d /vendor/wheels \
+      'setuptools-scm<=9.2.0' setuptools wheel Cython packaging flit_core hatchling hatch-vcs pbr poetry-core
+# Build the git-sourced packages into WHEELS (not sdists): a wheel needs no
+# build at install time, so its version + extras come straight from METADATA —
+# this is what lets an offline `pkg[extra]==<local-version>` pin resolve. The
+# sdists above stay as harmless extra links; wheels take precedence.
+RUN python3.12 -m pip wheel --pre --no-deps -w /vendor/wheels \
+      -r requirements/requirements_git.txt
 # RPM closure the runtime + builder stages install
 RUN mkdir -p /vendor/rpms && cd /vendor/rpms && \
     dnf download --resolve --alldeps \

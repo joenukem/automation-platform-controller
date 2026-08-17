@@ -22,19 +22,18 @@ Against `docs/REQUIREMENTS.md` §9. Updated as items close.
 ## Governance / build
 | req | status |
 |---|---|
-| CTL-002 mirror-only build | PARTIAL (de-risked) — base images mirrored + MIRROR_BASE wired (zero quay refs); full vendor bundle captured (vendor-capture:full, 125M wheels + 379M RPMs, both stages incl. copr rsyslog). Remaining: VENDORED render transform + deny-egress build (spec in docs/CTL-002-mirror-build-plan.md). |
+| CTL-002 mirror-only build | **DONE** — egress-free release build proven: `buildah bud --network none --pull=never` (zero network on every RUN, stronger than a deny-egress NetworkPolicy) builds `awx-25.0.0.dev0` green from the vendor bundle alone (controller:airgap-v8, sha256:566eafa8). Tripwire on the airgap image: 1233 passed / 13 failed / 116 errors — identical to the egress-built baseline. See reports/ctl-002-airgap-acceptance.md. |
 | CTL-072 stewardship | **DONE** — STEWARDSHIP.md: named owner, monthly rebase process, CVE watch, drop-the-fork path, ledger |
 
 ## Remaining — and what each is blocked on
 
-Quick controller/doc items: **all closed** (§9.3, §9.4, §9.5, CTL-040/041/051/072).
+Quick controller/doc items: **all closed** (§9.3, §9.4, §9.5, CTL-040/041/051/072, **CTL-002**).
 
 The rest each need infrastructure, a clean window, or non-controller work —
 none is a further quick win:
 
 | item | blocked on |
 |---|---|
-| CTL-002 pip/dnf mirror | one egress-allowed capture/sync pass (vendored-build or pulp) — see docs/CTL-002-mirror-build-plan.md; a few hours |
 | CTL-050 2h soak + CTL-052 under-load latency | an uninterrupted webapp window (other sessions keep redeploying lab-webapp mid-run) |
 | §9.1 ci-k3s-vm clean-room P0 | a throwaway ci-k3s-vm provisioned; deploy/scratch/up.sh manifests are ready to point at it |
 | §9.2 DO467 full suite green @MAX=3 | lab-content selector fixes + automation-hub F13/F17 — NOT controller work (parity-sweep proved the controller passes correct content) |
