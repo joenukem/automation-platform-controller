@@ -4,7 +4,7 @@ Against `docs/REQUIREMENTS.md` §9. Updated as items close.
 
 | gate | status | evidence |
 |---|---|---|
-| §9.1 P0 on throwaway ci-k3s-vm | **SELF-CONTAINED + P0 CONFORMANCE PROVEN** (ci-k3s-vm formality remains) | gen-secrets.sh + up-cleanroom.sh deploy with zero prod1 dependency; verify.sh all 4 legs green in ns ctl-cleanroom (surface, org-filter, gateway password-grant, provider provision+teardown+clean leak-scan). Only a literally-separate ci-k3s-vm run remains (portability). reports/ctl-091-cleanroom-selfcontained.md |
+| §9.1 P0 on throwaway ci-k3s-vm | **DONE** | verify.sh all 4 legs green (exit 0) on a literal throwaway k3s cluster (nested k3s on prod1: own API/CNI/storage, images pulled fresh, secrets self-generated) — surface, org-filter, gateway password-grant, provider provision(7)+teardown+clean leak-scan. Also proven self-contained in ns ctl-cleanroom. reports/ctl-091-cleanroom-selfcontained.md |
 | §9.2 DO467 green @MAX=3 + 3 victims @MAX=8 | **PARTIAL** | victims (11, review-inventory, review-job-template) green @MAX=8; full @MAX=3 blocked by lab-content+hub (NOT controller — see parity-sweep report) |
 | §9.3 leak-scan zero orphans / 20 cycles | **DONE** | 20/20 clean, estate verified clean post-run (reports/ctl-040-leak-scan-20) |
 | §9.4 cutover rehearsal on prod1 DB copy | **DONE** | Phase-1 report: 235MB dump, 41 migrations clean, then native cutover live |
@@ -36,7 +36,6 @@ none is a further quick win:
 | item | blocked on |
 |---|---|
 | CTL-050 2h soak + CTL-052 under-load latency | an uninterrupted webapp window (other sessions keep redeploying lab-webapp mid-run) |
-| §9.1 ci-k3s-vm clean-room P0 | a throwaway ci-k3s-vm provisioned; deploy/scratch/up.sh manifests are ready to point at it |
 | §9.2 DO467 full suite green @MAX=3 | lab-content selector fixes + automation-hub F13/F17 — NOT controller work (parity-sweep proved the controller passes correct content) |
 
 ## §9.1 clean-room execution map (derived 2026-08-16)
