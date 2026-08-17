@@ -4,7 +4,7 @@ Against `docs/REQUIREMENTS.md` §9. Updated as items close.
 
 | gate | status | evidence |
 |---|---|---|
-| §9.1 P0 on throwaway ci-k3s-vm | **OPEN** | cutover proven natively on prod1 (ahead of plan); clean-room ci-k3s-vm P0 deploy not yet done |
+| §9.1 P0 on throwaway ci-k3s-vm | **OPEN** (execution map ready) | cutover proven natively on prod1 (ahead of plan); clean-room deploy blocked only on self-contained secrets + a ci-k3s-vm — see "§9.1 clean-room execution map" below |
 | §9.2 DO467 green @MAX=3 + 3 victims @MAX=8 | **PARTIAL** | victims (11, review-inventory, review-job-template) green @MAX=8; full @MAX=3 blocked by lab-content+hub (NOT controller — see parity-sweep report) |
 | §9.3 leak-scan zero orphans / 20 cycles | **DONE** | 20/20 clean, estate verified clean post-run (reports/ctl-040-leak-scan-20) |
 | §9.4 cutover rehearsal on prod1 DB copy | **DONE** | Phase-1 report: 235MB dump, 41 migrations clean, then native cutover live |
@@ -38,3 +38,38 @@ none is a further quick win:
 | CTL-050 2h soak + CTL-052 under-load latency | an uninterrupted webapp window (other sessions keep redeploying lab-webapp mid-run) |
 | §9.1 ci-k3s-vm clean-room P0 | a throwaway ci-k3s-vm provisioned; deploy/scratch/up.sh manifests are ready to point at it |
 | §9.2 DO467 full suite green @MAX=3 | lab-content selector fixes + automation-hub F13/F17 — NOT controller work (parity-sweep proved the controller passes correct content) |
+
+## §9.1 clean-room execution map (derived 2026-08-16)
+
+The remaining clean-room deploy is deploy-engineering, not controller code. The
+current `deploy/scratch/up.sh` **clones** five secrets from prod1's live
+`automation-platform` namespace, so it is not self-contained. To close §9.1:
+
+**A. Self-contained secret generator** (`deploy/scratch/gen-secrets.sh`, no
+cluster needed — the hardest part is crypto material):
+- `awx-controller-runtime`: `secret-key` (50-char django), `postgres-password` (random).
+- `awx-gateway-runtime`: `postgres-password`, `database-url`
+  (`postgres://…@awx-gateway-postgres:5432/gateway`), `gateway-oidc-client-secret`,
+  `session-cookie-secret`, `trusted-header-signing-secret`. **Coupling:** the
+  controller reads `trusted-header-signing-secret` *directly* from this same
+  secret (stack.yaml:385) — one value, both consumers, no duplication.
+- `awx-gateway-signing-key`: `key-id` (hex), `signing-key` (RSA PEM, JWT signing).
+- `awx-dex-tls-secret`: self-signed `ca.crt`/`tls.crt`/`tls.key` for the dex issuer.
+- `awx-gateway-local-users`: `users.json` (admin + bcrypt).
+- **Couplings to align:** (1) `gateway-oidc-client-secret` must equal the
+  `awx-gateway` static-client secret in the **dex** config; (2)
+  `awx-gateway-oidc-config` CM issuer/domain (`dex.<BASE_DOMAIN>`) must match the
+  dex TLS cert SAN and the deployed ingress host.
+
+**B. Prove self-contained** first in a fresh prod1 namespace with `gen-secrets.sh`
+(no `automation-platform` dependency) → rollout green + `/api/v2/ping/` 200 +
+`build/verify.sh` four legs. This closes "reproducible from nothing."
+
+**C. ci-k3s-vm** — provision one sized near the pool's ~10Gi guest ceiling (the
+stack's working set: web+task ~2Gi limit each, postgres/redis/gateway/gw-postgres/
+dex on top — tight but fits a dedicated VM). Deploy via B's manifests, then run
+the P0 subset (verify.sh legs + CTL-012 provider provision/teardown + CTL-040
+leak-scan) against it. Green = §9.1.
+
+Estimate: a focused session (the doc's own "few hours"); the crypto-material
+generator (A) and the dex/oidc couplings are the fiddly parts.
