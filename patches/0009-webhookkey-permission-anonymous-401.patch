@@ -4,20 +4,15 @@ The webhook-key endpoints (GET/POST /api/v2/{job_templates,workflow_job_
 templates}/<id>/webhook_key/) are guarded by WebhookKeyPermission, which only
 implements has_object_permission -> request.user.can_access(...). DRF's default
 has_permission returns True, so an UNAUTHENTICATED request falls through to the
-object check and calls AnonymousUser.can_access, which does not exist:
-
-    AttributeError: 'AnonymousUser' object has no attribute 'can_access'
-
--> the endpoint returns HTTP 500 for anonymous callers instead of a clean 401
-(the sibling detail view /job_templates/<id>/ correctly returns 401). The key is
-not leaked (the error occurs before any response body), so this is a robustness/
-correctness defect rather than a disclosure — but CTL-061 requires webhook keys
-be reachable "only via the authorized endpoint", and a 500 is the wrong contract.
+object check and calls AnonymousUser.can_access, which does not exist
+(AttributeError) -> HTTP 500 instead of a clean 401 (the sibling detail view
+/job_templates/<id>/ correctly returns 401). The key is not leaked (the error
+occurs before any response body), but CTL-061 requires webhook keys be reachable
+"only via the authorized endpoint", and a 500 is the wrong contract.
 
 Fix: add an authenticated-only has_permission (mirroring IsSystemAdmin /
 IsSystemAdminOrAuditor in the same module) so anonymous requests are rejected up
-front with 401. Authorized behaviour is unchanged (authenticated users still go
-through can_access for object-level admin).
+front with 401. Authorized behaviour is unchanged.
 
 diff --git a/awx/api/permissions.py b/awx/api/permissions.py
 index ce42274..d0ca92a 100644
@@ -37,3 +32,4 @@ index ce42274..d0ca92a 100644
 +
      def has_object_permission(self, request, view, obj):
          return request.user.can_access(view.model, 'admin', obj, request.data)
+ 

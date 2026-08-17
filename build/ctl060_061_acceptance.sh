@@ -67,7 +67,8 @@ ob,_=Organization.objects.get_or_create(name='CTL060-orgB')
 ua,_=U.objects.get_or_create(username='ctl060-usera'); ua.is_superuser=False; ua.set_unusable_password(); ua.save()
 ub,_=U.objects.get_or_create(username='ctl060-userb'); ub.is_superuser=False; ub.set_unusable_password(); ub.save()
 oa.member_role.members.add(ua); ob.member_role.members.add(ub)
-Inventory.objects.get_or_create(name='CTL060-invA', organization=oa)
+inv,_=Inventory.objects.get_or_create(name='CTL060-invA', organization=oa)
+inv.read_role.members.add(ua)   # userA is explicitly granted read on orgA's inventory
 print('OK')" | grep -q OK && pass "isolation fixtures created" || bad "isolation setup failed"
 seenB=$(shell "
 from awx.main.models import Inventory
@@ -97,7 +98,7 @@ rep=dict(CredentialSerializer(c).data.get('inputs',{}))
 print('API_PW='+str(rep.get('password')))
 print('DB_ENC='+str(c.inputs['password'].startswith('\$encrypted\$')))
 print('API_LEAK='+str('$SENT' in str(CredentialSerializer(c).data)))")
-echo "$red" | grep -q "API_PW=\$encrypted\$" && pass "credential password renders as \$encrypted\$ in API" || bad "credential password not redacted ($(echo "$red"|grep API_PW=))"
+echo "$red" | grep -qF 'API_PW=$encrypted$' && pass "credential password renders as \$encrypted\$ in API" || bad "credential password not redacted ($(echo "$red"|grep API_PW=))"
 echo "$red" | grep -q "DB_ENC=True" && pass "credential secret stored encrypted at rest (\$encrypted\$ ciphertext)" || bad "credential secret not encrypted at rest"
 echo "$red" | grep -q "API_LEAK=False" && pass "serialized credential does NOT contain the plaintext secret" || bad "serialized credential leaks plaintext"
 
