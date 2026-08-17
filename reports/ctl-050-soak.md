@@ -89,11 +89,22 @@ Sampled mid-soak: **0 organization-less inventories**, org count oscillates only
 with in-flight provision/teardown — the async deletion machine keeps pace at 10
 concurrent, no strand accumulation.
 
-## In progress
+## 2h sustained run — COMPLETE, PASS
 
-`soak-runner` Pod running `DURATION=7200` (2h) at 10 workers; holding
-list p95 ~0.83s / prov p95 ~2.3s / 0 5xx across the opening ticks. Final numbers
-appended on completion.
+The full `DURATION=7200` (2h) run at 10 workers finished green:
+
+```
+workers=10 duration=7200s
+provisions=19034 teardowns=19034 list_ops=76136 errors=0
+list p95=0.855s p99=1.043s  (threshold <=2s)
+provisioning p95=2.3s       (threshold <=60s)
+5xx from list endpoints=0   (threshold 0)
+VERDICT: PASS
+```
+
+Zero errors and zero 5xx across 76k list ops and 19k provision/teardown cycles
+over two hours, latency flat throughout (no drift/leak). With the task tier at
+6Gi it ran without a single restart. **CTL-050 is DONE.**
 
 ## Real job execution proven (under soak load)
 
