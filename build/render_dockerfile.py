@@ -21,9 +21,16 @@ def main(awx_tree: str, receptor_image: str) -> None:
     # buildah here has no ssh forwarding; the git requirements are all https.
     df = df.replace('RUN --mount=type=ssh cd /tmp && make requirements_awx',
                     'RUN cd /tmp && make requirements_awx')
+    # CTL-002: when a base-image mirror is configured, rewrite the quay.io
+    # base + receptor FROMs to the franken registry so a release build has no
+    # quay.io dependency for container images. (pip/dnf mirroring is separate.)
+    mirror = os.environ.get('MIRROR_BASE')
+    if mirror:
+        df = df.replace('quay.io/centos/centos:stream9', mirror + '/centos/centos:stream9')
+        df = df.replace('quay.io/ansible/receptor:devel', mirror + '/ansible/receptor:devel')
     with open(os.path.join(awx_tree, 'Dockerfile'), 'w') as f:
         f.write(df)
     print(f'rendered Dockerfile ({len(df)} bytes) + supervisor configs')
 
 if __name__ == '__main__':
-    main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else 'quay.io/ansible/receptor:devel')
+    main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else (os.environ.get('MIRROR_BASE','').rstrip('/') + '/ansible/receptor:devel' if os.environ.get('MIRROR_BASE') else 'quay.io/ansible/receptor:devel'))

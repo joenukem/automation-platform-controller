@@ -71,7 +71,7 @@ open(path, 'w').write(s)
 print('  requirements_git pinned')
 PY
 
-python3 "$here/build/render_dockerfile.py" "$WORK/awx"
+MIRROR_BASE="${MIRROR_BASE:-}" python3 "$here/build/render_dockerfile.py" "$WORK/awx"
 
 # Builder pod (idempotent; dnsPolicy Default is what makes egress work).
 if ! kubectl -n $BUILDER_NS get pod $BUILDER >/dev/null 2>&1; then

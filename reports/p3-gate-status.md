@@ -22,7 +22,7 @@ Against `docs/REQUIREMENTS.md` §9. Updated as items close.
 ## Governance / build
 | req | status |
 |---|---|
-| CTL-002 mirror-only build | OPEN — dev/patch builds use live egress; centos base + receptor not mirrored; pip/dnf mirror not stood up |
+| CTL-002 mirror-only build | PARTIAL — base images (centos stream9 + receptor) mirrored to franken-registry/mirror/; render+build honor MIRROR_BASE (zero quay.io refs, verified). Remaining: pip index + dnf repo mirror. |
 | CTL-072 stewardship | OPEN — rebase cadence / CVE watch / named owner not established |
 
 ## Shortest remaining path
