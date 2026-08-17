@@ -25,6 +25,7 @@ Against `docs/REQUIREMENTS.md` §9. Updated as items close.
 | CTL-002 mirror-only build | **DONE** — egress-free release build proven: `buildah bud --network none --pull=never` (zero network on every RUN, stronger than a deny-egress NetworkPolicy) builds `awx-25.0.0.dev0` green from the vendor bundle alone (controller:airgap-v8, sha256:566eafa8). Tripwire on the airgap image: 1233 passed / 13 failed / 116 errors — identical to the egress-built baseline. See reports/ctl-002-airgap-acceptance.md. |
 | CTL-004 SBOM + license (P0) | **DONE** — build/sbom.sh (syft) on controller:airgap-v8: SPDX+syft SBOM + license CSV; gate PASS — 7 composed sources all Apache-2.0, copyleft is base-OS aggregation or uwsgi's linking exception (reports/ctl-004-sbom-license.md) |
 | CTL-072 stewardship | **DONE** — STEWARDSHIP.md: named owner, monthly rebase process, CVE watch, drop-the-fork path, ledger |
+| Product identity + plugin surface | **DONE** — patch 0007 enables the Automation Platform plugin surface (external-secret creds incl. Vault-OIDC, supported managed creds, supported inventory sources) + `X-API-Product-Name`/UI = `Automation Platform`, licensing left non-enforcing (OpenLicense). patch 0008 keeps the unit tripwire green. Built `0.0.2-g26941797e4` (full 0001–0008 queue) and deployed+verified on **both** prod1 (roll-forward) and franken (fresh stand-up cutover off frozen awx 24.6.1). reports/deploy-0.0.2-g26941797e4.md |
 
 ## Remaining — and what each is blocked on
 
