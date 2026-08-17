@@ -25,10 +25,16 @@ Against `docs/REQUIREMENTS.md` §9. Updated as items close.
 | CTL-002 mirror-only build | PARTIAL — base images (centos stream9 + receptor) mirrored to franken-registry/mirror/; render+build honor MIRROR_BASE (zero quay.io refs, verified). Remaining: pip index + dnf repo mirror. |
 | CTL-072 stewardship | **DONE** — STEWARDSHIP.md: named owner, monthly rebase process, CVE watch, drop-the-fork path, ledger |
 
-## Shortest remaining path
-1. 20-cycle leak scan (§9.3) — running
-2. CTL-002 base-image mirror (increment) then pip/dnf mirror
-3. CTL-052 latency capture + CTL-050 soak (needs clean window)
-4. ci-k3s-vm clean-room P0 proof (§9.1)
-5. stewardship log (CTL-072) + doc updates (§9.5)
-Non-controller: lab-content + hub to green the full suite (§9.2)
+## Remaining — and what each is blocked on
+
+Quick controller/doc items: **all closed** (§9.3, §9.4, §9.5, CTL-040/041/051/072).
+
+The rest each need infrastructure, a clean window, or non-controller work —
+none is a further quick win:
+
+| item | blocked on |
+|---|---|
+| CTL-002 pip/dnf mirror | one egress-allowed capture/sync pass (vendored-build or pulp) — see docs/CTL-002-mirror-build-plan.md; a few hours |
+| CTL-050 2h soak + CTL-052 under-load latency | an uninterrupted webapp window (other sessions keep redeploying lab-webapp mid-run) |
+| §9.1 ci-k3s-vm clean-room P0 | a throwaway ci-k3s-vm provisioned; deploy/scratch/up.sh manifests are ready to point at it |
+| §9.2 DO467 full suite green @MAX=3 | lab-content selector fixes + automation-hub F13/F17 — NOT controller work (parity-sweep proved the controller passes correct content) |
