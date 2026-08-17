@@ -1,0 +1,27 @@
+# CTL-002 vendored-build capture: runs in the TARGET base so wheels/RPMs carry
+# the right platform tags. Produces /vendor/{wheels,rpms} for an egress-free
+# rebuild. Build with egress allowed once per sources.lock.
+ARG MIRROR_BASE=quay.io
+FROM ${MIRROR_BASE}/centos/centos:stream9
+USER root
+RUN dnf -y update && dnf install -y 'dnf-command(config-manager)' 'dnf-command(download)' epel-next-release && \
+    dnf config-manager --set-enabled crb && \
+    dnf install -y python3.12 python3.12-pip python3.12-devel git-core createrepo_c
+WORKDIR /capture
+COPY requirements/ requirements/
+# pip wheel closure (both the pinned PyPI set and the git requirements)
+RUN mkdir -p /vendor/wheels && python3.12 -m pip install -U pip && \
+    python3.12 -m pip download -d /vendor/wheels build && \
+    (cat requirements/requirements.txt requirements/requirements_git.txt | \
+     python3.12 -m pip download -d /vendor/wheels -r /dev/stdin || \
+     echo "NOTE: some source-only pkgs may need --no-binary at install time")
+# RPM closure the runtime + builder stages install
+RUN mkdir -p /vendor/rpms && cd /vendor/rpms && \
+    dnf download --resolve --alldeps \
+      openssh-clients iputils gcc gcc-c++ git-core gettext glibc-langpack-en \
+      libffi-devel libtool-ltdl-devel make nss patch postgresql postgresql-devel \
+      python3.12 python3.12-devel python3.12-pip python3.12-setuptools \
+      python3.12-packaging python3.12-psycopg2 swig unzip xmlsec1-devel \
+      xmlsec1-openssl-devel inotify-tools podman && \
+    createrepo_c /vendor/rpms
+RUN du -sh /vendor/wheels /vendor/rpms

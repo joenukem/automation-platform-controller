@@ -9,7 +9,16 @@
   `$MIRROR_BASE` when set — verified the rendered Dockerfile has **zero
   quay.io references**.
 
-## Remaining: pip index + dnf repos
+## Capture pass — DONE (proven)
+
+`build/vendor/Dockerfile.capture` runs in the mirrored `centos:stream9` base
+(so wheels carry the right platform tags — the pitfall of capturing in the
+buildah/Fedora pod is avoided) and produces `/vendor/{wheels,rpms}`:
+**119M wheels + 302M RPMs** (with EPEL enabled for `inotify-tools`), pushed as
+`automation-platform/vendor-capture:probe`. This is the once-per-`sources.lock`
+egress-allowed pass.
+
+## Remaining: vendored install + deny-egress proof
 
 The build still reaches PyPI (`pip install build`, `make requirements_awx`),
 git (the `requirements_git.txt` https clones), and CentOS Stream 9 + CRB dnf
