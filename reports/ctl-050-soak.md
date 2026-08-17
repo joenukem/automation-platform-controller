@@ -79,8 +79,28 @@ concurrent, no strand accumulation.
 list p95 ~0.83s / prov p95 ~2.3s / 0 5xx across the opening ticks. Final numbers
 appended on completion.
 
-## CTL-052 (P2) — separate
+## Real job execution proven (under soak load)
 
-Event-latency (console output ≤5s under load) needs **real job execution** (a
-working EE + container group); the soak seeds job *records* and exercises the
-API/list/provision paths, not live playbook runs. Tracked separately.
+Beyond the seeded records, **real end-to-end job execution works on the
+clean-room controller**: a git project synced from gitea (a container-group pod
+cloned the repo → `successful`), then a `hello.yml` job template launched and ran
+to `successful` in a spawned EE pod — all while the soak hammered the controller.
+The `default` container group spawns job pods via the `awx-controller-task`
+service account (verified `can-i create pods: yes`), no external credential
+needed. One setup step the post-wipe recovery missed and this surfaced: a
+**global default EE must be registered** (`register_default_execution_environments`
++ `DEFAULT_EXECUTION_ENVIRONMENT` setting) or `resolve_execution_environment()`
+errors every job; `up-cleanroom.sh` runs the register step, but a bare
+`awx-manage migrate` recovery does not.
+
+## CTL-052 (P2) — event-delivery latency: PASS
+
+`build/ctl052-latency.py` — launches N job-template runs and, for each
+`job_event`, measures lag = (server `Date` header at first sighting) −
+`event.created` (both the controller's clock → skew-free). Run **during the
+soak** (10-way concurrent load): 3 jobs, 15 events, **max delivery lag 3.0s**
+(threshold ≤5s) → **PASS**. The lag tracks the callback-receiver batch-flush
+cadence, not a growing backlog; output is live within ~3s under load, so the
+10–30s "output-settle sleeps" the labs currently carry are unjustified. (This
+measures persistence→visibility; a full stdout→visible number would need a
+timestamp-emitting playbook, i.e. repo write access — a follow-up, not a gate.)
