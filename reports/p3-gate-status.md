@@ -8,7 +8,7 @@ Against `docs/REQUIREMENTS.md` §9. Updated as items close.
 | §9.2 DO467 green @MAX=3 + 3 victims @MAX=8 | **PARTIAL** | victims (11, review-inventory, review-job-template) green @MAX=8; full @MAX=3 blocked by lab-content+hub (NOT controller — see parity-sweep report) |
 | §9.3 leak-scan zero orphans / 20 cycles | **IN PROGRESS** | harness proven 1 cycle; 20-cycle loop running |
 | §9.4 cutover rehearsal on prod1 DB copy | **DONE** | Phase-1 report: 235MB dump, 41 migrations clean, then native cutover live |
-| §9.5 parity-drivers/ledger updated | **PARTIAL** | patches 0001-0006, ADR-0001/0002 recorded; sweep + robustness folded next |
+| §9.5 parity-drivers/ledger updated | **DONE** | parity-drivers.md resolution table: 6 drivers closed by evidence, D5/D6 carried with IDs |
 
 ## Phase-3 CTL items (CTL-040..052)
 | req | status |
