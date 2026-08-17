@@ -15,7 +15,7 @@ Against `docs/REQUIREMENTS.md` §9. Updated as items close.
 |---|---|
 | CTL-040 no stranded resources | DONE — patches 0001/0004/0005, live-proven, NOT NULL enforces I1 |
 | CTL-041 resumable teardown | DONE — state machine + pump; patch 0006 closed the failed-retry gap |
-| CTL-050 scale correctness | 6/6 concurrent proven; formal 2h MAX>=8 soak awaits a clean webapp window |
+| CTL-050 scale correctness | **thresholds MET** — build/soak.py, 10 concurrent + 10k historical jobs on isolated ctl-soak: list p95 0.89s (≤2s), prov p95 2.4s (≤60s), 0 5xx, 0 errors (web 3×4CPU + pg 4CPU). 2h sustained run in progress. reports/ctl-050-soak.md. Finding: shipped deploy/ web must be sized up for the SLO |
 | CTL-051 dispatcher survival | **DONE** — queued job survived a force-killed task pod (reports/ctl-051-*) |
 | CTL-052 event-latency budget | jobs-list N+1 fixed (patch 0003, 33->13 q); live-tail <=5s under soak not formally captured |
 
