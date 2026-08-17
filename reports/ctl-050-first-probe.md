@@ -46,3 +46,15 @@ N+1 — fixed in both `JobAccess.select_related` and
 tripwire exact (1232/13/116); ex467-06 green serially after the (recurring,
 unrelated) content-reset was re-deployed.
 
+## Probe 3 — 6/6, all pass, fully concurrent (build 0.0.2-g0fb6e84540)
+
+With patch 0003 (jobs-list N+1: 33 -> 13 queries/page) and patch 0004 live,
+the full known-green set passed **fully concurrently, zero failures**. The
+progression — 4/6, 5/6, 6/6 across three probes — tracks the query-count
+reduction, consistent with the rotating render-wait failures having been
+list-latency backpressure all along.
+
+Milestone: the candidate now does at 6-concurrent what the frozen engine
+could not do at 4. The remaining CTL-050 gate work is scale (full in-scope
+set, MAX>=8, 2h soak), not correctness.
+
