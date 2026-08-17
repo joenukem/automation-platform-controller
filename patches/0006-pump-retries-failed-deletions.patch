@@ -1,0 +1,62 @@
+From: Automation Platform controller <controller@pipefail.dev>
+Subject: [PATCH 0006] the deletion pump retries FAILED deletions, not just stuck ones
+
+Robustness fix in our own org-deletion subsystem (ADR-0001), found by a
+fault-path review after the parity sweep: the pump re-dispatched pending and
+stuck (cancelling/reaping >10min) deletions, but never `failed` ones. An
+explicit DELETE that failed once (e.g. a job that would not cancel in the
+grace window -> RuntimeError -> failed) had no caller re-issuing it and sat
+stranded forever, contradicting the ADR contract ("resumable, never abort").
+Lease-expiry deletions self-healed via a fresh record; explicit ones did not.
+
+The pump now retries failed deletions on the same 10-minute backoff as stuck
+ones (the reaper already transitions failed->pending at its top, so the
+re-dispatch re-enters the machine cleanly). Permanent failures retry visibly
+-- the record shows state=failed with its error between attempts -- rather
+than silently stranding, consistent with how stuck reaps already retry.
+
+Tested by: unit (failed->pending resumability) + tripwire baseline.
+
+diff --git a/awx/main/tasks/org_deletion.py b/awx/main/tasks/org_deletion.py
+index ef39912..adf9b7c 100644
+--- a/awx/main/tasks/org_deletion.py
++++ b/awx/main/tasks/org_deletion.py
+@@ -114,7 +114,17 @@ def process_organization_deletions():
+     stuck = OrganizationDeletion.objects.filter(
+         state__in=(OrganizationDeletion.STATE_CANCELLING_JOBS, OrganizationDeletion.STATE_REAPING), modified__lt=stale
+     )
+-    for deletion in list(ready) + list(stuck):
++    # A failed deletion must not strand: an explicit DELETE that failed (e.g. a
++    # job that would not cancel in the window) has no caller re-issuing it, and
++    # the ADR's contract is "resumable, never abort". Retry failed deletions on
++    # the same backoff as stuck ones — the reaper's failed->pending transition
++    # re-enters the machine. Permanent failures keep retrying visibly (the
++    # record shows state=failed with its error between attempts) rather than
++    # silently stranding, matching how stuck reaps already retry without a cap.
++    failed = OrganizationDeletion.objects.filter(
++        state=OrganizationDeletion.STATE_FAILED, modified__lt=stale
++    )
++    for deletion in list(ready) + list(stuck) + list(failed):
+         logger.info('dispatching reaper for organization deletion %s (state=%s)', deletion.pk, deletion.state)
+         reap_organization.apply_async([deletion.pk], queue=get_task_queuename())
+ 
+diff --git a/awx/main/tests/unit/test_org_deletion.py b/awx/main/tests/unit/test_org_deletion.py
+index 41173b3..a6bedef 100644
+--- a/awx/main/tests/unit/test_org_deletion.py
++++ b/awx/main/tests/unit/test_org_deletion.py
+@@ -68,3 +68,15 @@ def test_expired_lease_exclusion_states_cover_all_nonterminal():
+         OrganizationDeletion.STATE_CANCELLING_JOBS,
+         OrganizationDeletion.STATE_REAPING,
+     }
++
++
++def test_reaper_resumes_from_failed_state():
++    # a failed deletion re-dispatched by the pump must be resumable: the reaper
++    # transitions it back to pending before proceeding (proven by the transition
++    # table allowing failed->pending and nothing else out of failed).
++    d = _unsaved(OrganizationDeletion.STATE_FAILED)
++    d.transition(OrganizationDeletion.STATE_PENDING)
++    assert d.state == OrganizationDeletion.STATE_PENDING
++    # and from pending it can proceed
++    d.transition(OrganizationDeletion.STATE_CANCELLING_JOBS)
++    assert d.state == OrganizationDeletion.STATE_CANCELLING_JOBS

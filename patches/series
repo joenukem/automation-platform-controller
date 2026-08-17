@@ -4,3 +4,4 @@
 0003-jobs-list-ee-prefetch.patch
 0004-adopt-wedged-inventory-deletions.patch
 0005-adopt-orphans-inventory-not-null.patch
+0006-pump-retries-failed-deletions.patch
