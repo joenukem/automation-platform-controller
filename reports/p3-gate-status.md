@@ -28,14 +28,16 @@ Against `docs/REQUIREMENTS.md` §9. Updated as items close.
 
 ## Remaining — and what each is blocked on
 
-Quick controller/doc items: **all closed** (§9.3, §9.4, §9.5, CTL-040/041/051/072, **CTL-002**).
+**Every controller-side gate is closed** (§9.1/9.3/9.4/9.5, CTL-002/004/040/041/
+050/051/052/072). CTL-050's thresholds are met and a 2h sustained run validates
+them; CTL-052 passed under that load. The isolated-namespace approach
+(deploy/scratch/up-cleanroom.sh) removed the "clean webapp window" dependency
+entirely — the controller no longer needs the shared stack to be measured.
 
-The rest each need infrastructure, a clean window, or non-controller work —
-none is a further quick win:
+Only one item remains, and it is **not controller work**:
 
 | item | blocked on |
 |---|---|
-| CTL-050 2h soak + CTL-052 under-load latency | an uninterrupted webapp window (other sessions keep redeploying lab-webapp mid-run) |
 | §9.2 DO467 full suite green @MAX=3 | lab-content selector fixes + automation-hub F13/F17 — NOT controller work (parity-sweep proved the controller passes correct content) |
 
 ## §9.1 clean-room execution map (derived 2026-08-16)
