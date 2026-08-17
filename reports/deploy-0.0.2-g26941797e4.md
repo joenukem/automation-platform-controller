@@ -91,3 +91,12 @@ Notes:
 - Franken's separate `awx` namespace runs an **awx-operator**-managed upstream
   AWX 24.6.1 instance — a distinct reference deployment, not the Automation
   Platform product stack; out of scope for this cutover.
+
+## Addendum 2026-08-17 — superseded by 0.0.2-g1cd28c7d49 (patch 0009)
+
+Patch **0009** (WebhookKeyPermission anonymous → 401 not 500, closing the CTL-061
+webhook-key clause) was added; the current image on **both** clusters is now
+`0.0.2-g1cd28c7d49` (full 0001–0009 queue). Same roll-forward (prod1) / already-
+cutover (franken) mechanics; product identity + plugin surface unchanged. Unit
+tripwire 1235/13/116 (unchanged). CTL-060/061 acceptance all-green:
+`reports/ctl-060-061-security-acceptance.md`.

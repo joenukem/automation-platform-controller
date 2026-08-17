@@ -11,4 +11,4 @@ ERROR awx/main/tests/unit/test_tasks.py::TestProjectUpdateRefspec::test_refspec_
 ERROR awx/main/tests/unit/test_tasks.py::TestProjectUpdateRefspec::test_custom_refspec_not_overridden
 ERROR awx/main/tests/unit/test_tasks.py::TestProjectUpdateRefspec::test_no_refspec_without_allow_override
 ERROR awx/main/tests/unit/test_tasks.py::TestGenericRun::test_generic_failure
-13 failed, 1235 passed, 1 xfailed, 116 errors in 22.48s
+13 failed, 1235 passed, 1 xfailed, 116 errors in 19.80s
