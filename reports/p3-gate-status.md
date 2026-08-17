@@ -23,6 +23,7 @@ Against `docs/REQUIREMENTS.md` §9. Updated as items close.
 | req | status |
 |---|---|
 | CTL-002 mirror-only build | **DONE** — egress-free release build proven: `buildah bud --network none --pull=never` (zero network on every RUN, stronger than a deny-egress NetworkPolicy) builds `awx-25.0.0.dev0` green from the vendor bundle alone (controller:airgap-v8, sha256:566eafa8). Tripwire on the airgap image: 1233 passed / 13 failed / 116 errors — identical to the egress-built baseline. See reports/ctl-002-airgap-acceptance.md. |
+| CTL-004 SBOM + license (P0) | **DONE** — build/sbom.sh (syft) on controller:airgap-v8: SPDX+syft SBOM + license CSV; gate PASS — 7 composed sources all Apache-2.0, copyleft is base-OS aggregation or uwsgi's linking exception (reports/ctl-004-sbom-license.md) |
 | CTL-072 stewardship | **DONE** — STEWARDSHIP.md: named owner, monthly rebase process, CVE watch, drop-the-fork path, ledger |
 
 ## Remaining — and what each is blocked on
