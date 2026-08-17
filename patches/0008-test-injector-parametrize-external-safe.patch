@@ -1,0 +1,35 @@
+Subject: [PATCH] test: make managed-injector parametrize robust to external cred types
+
+Under the Automation Platform product identity, load_credentials() registers
+the external-secret credential types (HashiCorp Vault, Conjur, CyberArk AIM,
+Azure KV, AWS SM, Delinea, GitHub App, ...) into ManagedCredentialType.registry
+via CredentialType.load_plugin(), which stores them as
+`SimpleNamespace(kind='external', backend=...)` with NO `injectors` attribute
+(external creds inject through a backend lookup, not static injectors — this is
+upstream's own design at credential.py:load_plugin).
+
+Upstream's test at test_tasks.py:1639 builds its parametrize list with a bare
+`if cls.injectors`, which assumes every registry entry has an `injectors`
+attribute — true only under the plain-AWX identity where the external types are
+gated off. With patch 0007 those types are (correctly) present, so the bare
+attribute access raises AttributeError at COLLECTION time and aborts the entire
+module. Runtime is unaffected: production code branches on `kind == 'external'`
+(CredentialTypeHelper.get_creation_params) and never reads `.injectors` on these.
+
+Fix: use `getattr(cls, 'injectors', None)`. This preserves the test's intent
+(parametrize over managed types that HAVE injectors) while correctly excluding
+the external, injector-less types instead of crashing on them. Test-only change.
+
+diff --git a/awx/main/tests/unit/test_tasks.py b/awx/main/tests/unit/test_tasks.py
+index 68b4d8e..599d34c 100644
+--- a/awx/main/tests/unit/test_tasks.py
++++ b/awx/main/tests/unit/test_tasks.py
+@@ -1636,7 +1636,7 @@ def test_acquire_lock_acquisition_fail_logged(fcntl_lockf, logger_mock, os_close
+     )
+ 
+ 
+-@pytest.mark.parametrize('injector_cls', [cls for cls in ManagedCredentialType.registry.values() if cls.injectors])
++@pytest.mark.parametrize('injector_cls', [cls for cls in ManagedCredentialType.registry.values() if getattr(cls, 'injectors', None)])
+ def test_managed_injector_redaction(injector_cls):
+     """See awx.main.models.inventory.PluginFileInjector._get_shared_env
+     The ordering within awx.main.tasks.jobs.BaseTask and contract with build_env

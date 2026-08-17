@@ -6,3 +6,4 @@
 0005-adopt-orphans-inventory-not-null.patch
 0006-pump-retries-failed-deletions.patch
 0007-enable-automation-platform-plugins.patch
+0008-test-injector-parametrize-external-safe.patch
