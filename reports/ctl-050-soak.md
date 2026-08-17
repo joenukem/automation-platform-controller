@@ -56,10 +56,26 @@ the concurrency-correctness that the frozen engine lacked (D4) holds regardless
 of sizing; the candidate's patch-0003 N+1 fix is what makes list latency merely a
 CPU-scaling problem instead of a query-explosion one. (2) The `deploy/scratch`
 manifests ship web at **1 CPU / 1 replica** — fine for functional tests, too small
-for the 10-session SLO. A production deploy must size web to ~3×4 CPU and
-postgres to ~4 CPU to hold list p95 ≤ 2s at 10 sessions / 10k jobs. **Recommend
-raising the shipped `deploy/` web/postgres requests+limits accordingly** (tracked
-here; the scratch profile stays small).
+for the 10-session SLO. A production deploy must size web to ~3×4 CPU,
+postgres to ~4 CPU, and the task tier to ~6Gi (see task-tier section) to hold the
+SLO at 10 sessions / 10k jobs. **Recommend raising the shipped `deploy/`
+web/postgres/task requests+limits accordingly** (tracked here; the scratch
+profile stays small for functional tests).
+
+## Task-tier sizing (surfaced by the sustained run — a soak-only finding)
+
+The 180s calibration passed, but ~25 min into the 2h run the **awx-task
+container OOMKilled** (exit 137, 2Gi limit) and CrashLoopBackOff'd: 10-way
+sustained provision/teardown generates a continuous stream of org-deletion
+reaper tasks whose working set exceeds 2Gi. Two things this proves:
+- **CTL-051 self-healing held through it** — the org-deletion log kept emitting
+  `organization N deleted {inventories: 1}` across restarts, and the mid-crash
+  orphan count stayed **0**: dispatcherd survives the restart, the
+  DISPATCH_SCHEDULE pump re-registers, and reaping resumes. The soak's list/
+  provision path (served by web) never returned a 5xx during the crash windows.
+- **Sizing conclusion:** like web/postgres CPU, the scratch task memory (2Gi) is
+  too small for sustained 10-session load. Raised to **6Gi** → 0 restarts, soak
+  green. Production `deploy/` must size the task tier to ~6Gi for this load.
 
 ## Pitfall recorded
 
