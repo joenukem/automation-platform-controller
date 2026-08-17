@@ -14,7 +14,8 @@ RUN mkdir -p /vendor/wheels && python3.12 -m pip install -U pip && \
     python3.12 -m pip download -d /vendor/wheels build && \
     (cat requirements/requirements.txt requirements/requirements_git.txt | \
      python3.12 -m pip download -d /vendor/wheels -r /dev/stdin || \
-     echo "NOTE: some source-only pkgs may need --no-binary at install time")
+     echo "NOTE: some source-only pkgs may need --no-binary at install time") && \
+    python3.12 -m pip download -d /vendor/wheels virtualenv supervisor dumb-init
 # RPM closure the runtime + builder stages install
 RUN mkdir -p /vendor/rpms && cd /vendor/rpms && \
     dnf download --resolve --alldeps \
@@ -22,6 +23,10 @@ RUN mkdir -p /vendor/rpms && cd /vendor/rpms && \
       libffi-devel libtool-ltdl-devel make nss patch postgresql postgresql-devel \
       python3.12 python3.12-devel python3.12-pip python3.12-setuptools \
       python3.12-packaging python3.12-psycopg2 swig unzip xmlsec1-devel \
-      xmlsec1-openssl-devel inotify-tools podman && \
+      xmlsec1-openssl-devel inotify-tools podman \
+      acl git-lfs krb5-workstation nginx rsync subversion sudo vim-minimal which \
+      xmlsec1-openssl && \
+    curl -sL https://copr.fedorainfracloud.org/coprs/ansible/Rsyslog/repo/epel-9/ansible-Rsyslog-epel-9.repo -o /etc/yum.repos.d/ansible-Rsyslog-epel-9.repo && \
+    dnf download --resolve --alldeps rsyslog && \
     createrepo_c /vendor/rpms
 RUN du -sh /vendor/wheels /vendor/rpms

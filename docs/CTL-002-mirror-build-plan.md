@@ -15,10 +15,35 @@
 (so wheels carry the right platform tags — the pitfall of capturing in the
 buildah/Fedora pod is avoided) and produces `/vendor/{wheels,rpms}`:
 **119M wheels + 302M RPMs** (with EPEL enabled for `inotify-tools`), pushed as
-`automation-platform/vendor-capture:probe`. This is the once-per-`sources.lock`
-egress-allowed pass.
+`automation-platform/vendor-capture:full` — **125M wheels + 379M RPMs**
+covering BOTH the builder and final stages, including rsyslog pulled from its
+Fedora copr repo (the non-obvious egress point). This is the once-per-
+`sources.lock` egress-allowed pass.
 
-## Remaining: vendored install + deny-egress proof
+## Remaining: vendored install + deny-egress proof (spec)
+
+The bundle is complete; what's left is a `VENDORED=1` render mode that
+transforms the rendered Dockerfile so both stages install offline, then one
+build under a deny-egress NetworkPolicy. The exact transforms (per the mapped
+Dockerfile):
+
+1. Prepend a bundle stage: `FROM …/vendor-capture:full AS vendor`, and in each
+   build stage `COPY --from=vendor /vendor /vendor` + write
+   `/etc/yum.repos.d/vendored.repo` → `baseurl=file:///vendor/rpms gpgcheck=0`.
+2. Rewrite each `dnf -y update && dnf install -y … && dnf config-manager
+   --set-enabled crb && dnf -y install …` → `dnf install -y --disablerepo='*'
+   --enablerepo=vendored …` (drop the update; the base image is current, and a
+   partial repo can't satisfy a full update).
+3. Replace the `epel-next-release`/`inotify-tools`/copr-rsyslog lines with a
+   plain vendored install (both are in the bundle).
+4. `ENV PIP_NO_INDEX=1 PIP_FIND_LINKS=/vendor/wheels` before the pip/`make`
+   steps — pip and `make requirements_awx` both honor it.
+5. Build with the builder pod under a NetworkPolicy denying all egress except
+   the franken registry; green build + green tripwire = CTL-002 acceptance.
+
+Effort: one focused session of Dockerfile transform + iterative debug. The
+feasibility is proven (capture works, platform tags correct, every egress
+point mapped and vendored).
 
 The build still reaches PyPI (`pip install build`, `make requirements_awx`),
 git (the `requirements_git.txt` https clones), and CentOS Stream 9 + CRB dnf

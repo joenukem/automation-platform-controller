@@ -22,7 +22,7 @@ Against `docs/REQUIREMENTS.md` §9. Updated as items close.
 ## Governance / build
 | req | status |
 |---|---|
-| CTL-002 mirror-only build | PARTIAL — base images (centos stream9 + receptor) mirrored to franken-registry/mirror/; render+build honor MIRROR_BASE (zero quay.io refs, verified). Remaining: pip index + dnf repo mirror. |
+| CTL-002 mirror-only build | PARTIAL (de-risked) — base images mirrored + MIRROR_BASE wired (zero quay refs); full vendor bundle captured (vendor-capture:full, 125M wheels + 379M RPMs, both stages incl. copr rsyslog). Remaining: VENDORED render transform + deny-egress build (spec in docs/CTL-002-mirror-build-plan.md). |
 | CTL-072 stewardship | **DONE** — STEWARDSHIP.md: named owner, monthly rebase process, CVE watch, drop-the-fork path, ledger |
 
 ## Remaining — and what each is blocked on
