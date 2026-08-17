@@ -1,6 +1,6 @@
 # ADR-0002 — API tokens are gateway-issued; the controller consumes, never mints
 
-Status: PROPOSED · 2026-08-16 · Drives the CTL-030 token row and the
+Status: PARTIALLY IMPLEMENTED · 2026-08-17 · Drives the CTL-030 token row and the
 `tokens` delta in `docs/api-surface.lock` (triaged in phase1/REPORT.md).
 
 ## Context
@@ -48,3 +48,25 @@ Status: PROPOSED · 2026-08-16 · Drives the CTL-030 token row and the
   user; `curl -H "Authorization: Bearer …" $CONTROLLER/api/v2/me/` returns
   that user. Wired into `build/verify.sh`.
 - ex467-13 green in the DO467 suite using the new flow.
+
+## Implementation status (2026-08-17)
+
+**Gateway password grant: SHIPPED** (awx-gateway `ffe0a41d`). `/oauth2/token`
+now accepts `grant_type=password`, verifying credentials through the same
+finalized identity chain as interactive login (local users, then OIDC ROPC).
+Proven live: a Keycloak lab user (in `lab-temporary-users`, so carrying
+`controller:*` scopes) exchanges username+password for a well-formed access
+token — decoded and confirmed `aud=controller`, correct scopes, correct sub.
+
+**Open: Bearer acceptance on the proxied controller path.** The minted token
+is rejected (`invalid_token`) when presented to `/api/v2/…` through the
+gateway, even though the proxy identity chain includes the oauth manager as
+its bearer fallback and the token validates structurally. Signing-key vs
+store-lookup consistency across the running gateway build is the next thing to
+isolate. Until then, ex467-13's rework stays parked; the grant exists but the
+end-to-end lab flow is not yet green.
+
+The pull-policy detail worth keeping: the OAP gateway deployment runs
+`imagePullPolicy: Never` (node-local images) — a registry-tagged overlay
+needs the policy flipped to `IfNotPresent` to roll.
+
