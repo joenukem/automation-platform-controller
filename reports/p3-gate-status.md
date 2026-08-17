@@ -23,7 +23,7 @@ Against `docs/REQUIREMENTS.md` §9. Updated as items close.
 | req | status |
 |---|---|
 | CTL-002 mirror-only build | PARTIAL — base images (centos stream9 + receptor) mirrored to franken-registry/mirror/; render+build honor MIRROR_BASE (zero quay.io refs, verified). Remaining: pip index + dnf repo mirror. |
-| CTL-072 stewardship | OPEN — rebase cadence / CVE watch / named owner not established |
+| CTL-072 stewardship | **DONE** — STEWARDSHIP.md: named owner, monthly rebase process, CVE watch, drop-the-fork path, ledger |
 
 ## Shortest remaining path
 1. 20-cycle leak scan (§9.3) — running
