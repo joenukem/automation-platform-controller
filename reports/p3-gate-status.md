@@ -15,7 +15,7 @@ Against `docs/REQUIREMENTS.md` §9. Updated as items close.
 |---|---|
 | CTL-040 no stranded resources | DONE — patches 0001/0004/0005, live-proven, NOT NULL enforces I1 |
 | CTL-041 resumable teardown | DONE — state machine + pump; patch 0006 closed the failed-retry gap |
-| CTL-050 scale correctness | **DONE** — 2h soak PASS: 19034 provision/teardown + 76136 list-ops, 0 errors, 0 5xx, list p95 0.855s, prov p95 2.3s (web 3×4CPU+pg 4CPU+task 6Gi). build/soak.py; 10 concurrent + 10k historical jobs on isolated ctl-soak: list p95 0.89s (≤2s), prov p95 2.4s (≤60s), 0 5xx, 0 errors (web 3×4CPU + pg 4CPU). 2h sustained run in progress. reports/ctl-050-soak.md. Finding: shipped deploy/ web must be sized up for the SLO |
+| CTL-050 scale correctness | **DONE** — 2h soak PASS: 19034 provision/teardown + 76136 list-ops, 0 errors, 0 5xx, list p95 0.855s, prov p95 2.3s at 10 concurrent + 10k historical jobs (web 3×4CPU + pg 4CPU + task 6Gi). build/soak.py on isolated ctl-soak. reports/ctl-050-soak.md. Finding: shipped deploy/ must be sized up for the SLO (deploy/apply-production-sizing.sh) |
 | CTL-051 dispatcher survival | **DONE** — queued job survived a force-killed task pod (reports/ctl-051-*) |
 | CTL-052 event-latency budget | **PASS** — build/ctl052-latency.py: real jobs launched during the 10-way soak, max event-delivery lag 3.0s (<=5s), skew-free server-clock. Also proves real end-to-end job execution (git sync + playbook in container-group pod) on the clean-room controller. reports/ctl-050-soak.md |
 
