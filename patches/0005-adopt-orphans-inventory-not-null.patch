@@ -1,0 +1,112 @@
+From: Automation Platform controller <controller@pipefail.dev>
+Subject: [PATCH 0005] adopt orphans; org-less inventories become unrepresentable
+
+Implements: ADR-0001 increment 3 (CTL-040 I1; design in
+docs/design/ADR-0001-increment-3-note.md).
+
+Data migration adopts every existing organization-NULL Inventory / Project /
+WorkflowJobTemplate into a leased `recovered-orphans` organization (30-day
+lease, so the graveyard clears itself through the ordinary lease GC), then
+main_inventory.organization_id goes NOT NULL at the database level: the
+SET_NULL-vs-reaper race turns into a loud IntegrityError on the org delete,
+which the deletion state machine already retries. Project and
+WorkflowJobTemplate share main_unifiedjobtemplate with JobTemplate (whose
+organization is legitimately NULL), so their guarantee is operational: the
+deletion pump adopts any stray org-NULL row into recovered-orphans each tick.
+
+Tested by: migration rehearsal on the live database + tripwire + the loud-
+race semantics documented in the design note.
+
+diff --git a/awx/main/migrations/0210_inventory_org_not_null.py b/awx/main/migrations/0210_inventory_org_not_null.py
+new file mode 100644
+index 0000000..82262f4
+--- /dev/null
++++ b/awx/main/migrations/0210_inventory_org_not_null.py
+@@ -0,0 +1,49 @@
++# ADR-0001 increment 3: adopt org-NULL strands, then make org-less inventories
++# unrepresentable at the database level. Project/WorkflowJobTemplate share
++# main_unifiedjobtemplate with JobTemplate (whose organization is legitimately
++# NULL), so their guarantee is operational (the deletion pump adopts strays)
++# rather than schema-level.
++from datetime import timedelta
++
++from django.db import migrations
++from django.utils import timezone
++
++RECOVERED_ORG_NAME = 'recovered-orphans'
++
++
++def adopt_orphans(apps, schema_editor):
++    Organization = apps.get_model('main', 'Organization')
++    Inventory = apps.get_model('main', 'Inventory')
++    Project = apps.get_model('main', 'Project')
++    WorkflowJobTemplate = apps.get_model('main', 'WorkflowJobTemplate')
++
++    def graveyard():
++        org = Organization.objects.filter(name=RECOVERED_ORG_NAME).first()
++        if org is None:
++            org = Organization.objects.create(
++                name=RECOVERED_ORG_NAME,
++                description='Adopted organization-less rows (ADR-0001 increment 3); lease-reaped.',
++                expires_at=timezone.now() + timedelta(days=30),
++            )
++        return org
++
++    org = None
++    for model in (Inventory, Project, WorkflowJobTemplate):
++        qs = model.objects.filter(organization__isnull=True)
++        if qs.exists():
++            org = org or graveyard()
++            qs.update(organization=org)
++
++
++class Migration(migrations.Migration):
++    dependencies = [
++        ('main', '0209_organization_expires_at'),
++    ]
++
++    operations = [
++        migrations.RunPython(adopt_orphans, migrations.RunPython.noop),
++        migrations.RunSQL(
++            sql='ALTER TABLE main_inventory ALTER COLUMN organization_id SET NOT NULL;',
++            reverse_sql='ALTER TABLE main_inventory ALTER COLUMN organization_id DROP NOT NULL;',
++        ),
++    ]
+diff --git a/awx/main/tasks/org_deletion.py b/awx/main/tasks/org_deletion.py
+index 724ef21..ef39912 100644
+--- a/awx/main/tasks/org_deletion.py
++++ b/awx/main/tasks/org_deletion.py
+@@ -82,6 +82,33 @@ def process_organization_deletions():
+         logger.info('adopting wedged pending_deletion inventory %s (%s)', inv.pk, inv.name)
+         delete_inventory.apply_async([inv.pk, None], queue=get_task_queuename())
+ 
++    # Project/WorkflowJobTemplate share their organization column with
++    # JobTemplate (legitimately NULL), so their no-strand guarantee is
++    # operational, not schema-level: adopt any org-NULL row into the leased
++    # recovered-orphans organization, where the lease GC eventually clears it.
++    from datetime import timedelta as _td
++
++    from awx.main.models import Project, WorkflowJobTemplate
++
++    def _graveyard():
++        org = Organization.objects.filter(name='recovered-orphans').first()
++        if org is None:
++            org = Organization.objects.create(
++                name='recovered-orphans',
++                description='Adopted organization-less rows (ADR-0001 increment 3); lease-reaped.',
++                expires_at=now + _td(days=30),
++            )
++        return org
++
++    graveyard = None
++    for model in (Project, WorkflowJobTemplate):
++        strays = model.objects.filter(organization__isnull=True)
++        count = strays.count()
++        if count:
++            graveyard = graveyard or _graveyard()
++            logger.info('adopting %d org-less %s row(s) into recovered-orphans', count, model.__name__)
++            strays.update(organization=graveyard)
++
+     stale = now - timedelta(seconds=STUCK_AFTER_SECONDS)
+     ready = OrganizationDeletion.objects.filter(state=OrganizationDeletion.STATE_PENDING)
+     stuck = OrganizationDeletion.objects.filter(

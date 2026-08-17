@@ -1,6 +1,6 @@
 # ADR-0001 increment 3 — design note: making NOT NULL safe to land
 
-Status: DESIGN · 2026-08-17 · The prerequisite analysis the increments 1–2
+Status: SHIPPED · 2026-08-17 (patch 0005, live 0.0.2-gad045013de) · The prerequisite analysis the increments 1–2
 work uncovered, written down before any schema tightening ships.
 
 ## What produces org-NULL rows today, post-patches
@@ -65,3 +65,14 @@ NOT NULL; patch 0004 already fixed the part that was broken.
 I1 (no org-NULL rows) becomes enforceable by the database itself; the
 20-cycle leak scan plus one deliberate race test (create an object during
 reaping, observe loud retry, observe eventual clean completion).
+
+## Shipped result (2026-08-17)
+
+Migration 0210 applied over the live database (0 orphans to adopt — patches
+0001/0002/0004 had already kept it clean), `main_inventory.organization_id`
+is now NOT NULL. Live proof: creating an org+inventory and deleting only the
+org row raises `IntegrityError: null value in column "organization_id" ...
+violates not-null constraint` — the SET_NULL race is loud, and the deletion
+state machine's existing failed->retry path handles it. Invariant I1 is
+enforced by the database. Tripwire exact (1232/13/116).
+

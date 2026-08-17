@@ -31,6 +31,14 @@ while IFS='|' read -r path _; do
 done < "$here/docs/api-surface.lock"
 [ "$fail" = 0 ] && echo "surface replay: OK"
 
+# ADR-0001 increment 3: the locked list endpoints must honor ?organization=
+# scoping (scoped-by-default consumers depend on it).
+for p in inventories projects job_templates workflow_job_templates; do
+  code=$(curl -sk -m 20 -u "$ADMIN_USER:$ADMIN_PASSWORD" -o /dev/null -w '%{http_code}' "$CONTROLLER_URL/api/v2/$p/?organization=1&page_size=1")
+  [ "$code" = 200 ] || { echo "ORG-FILTER FAIL $code $p"; fail=1; }
+done
+[ "$fail" = 0 ] && echo "organization-filter conformance: OK"
+
 PM=/mnt/labpool/pool-manager
 if command -v go >/dev/null && [ -d "$PM/cmd/provider-conformance" ]; then
   ( cd "$PM" && AWX_BASE_URL="$CONTROLLER_URL" AWX_USERNAME="$ADMIN_USER" AWX_PASSWORD="$ADMIN_PASSWORD" \
