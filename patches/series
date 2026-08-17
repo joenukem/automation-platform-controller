@@ -2,3 +2,4 @@
 0001-org-deletion-state-machine.patch
 0002-session-leases.patch
 0003-jobs-list-ee-prefetch.patch
+0004-adopt-wedged-inventory-deletions.patch

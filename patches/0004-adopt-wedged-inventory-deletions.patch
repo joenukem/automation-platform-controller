@@ -1,0 +1,38 @@
+From: Automation Platform controller <controller@pipefail.dev>
+Subject: [PATCH 0004] adopt inventories wedged by web-tier async deletion
+
+Fixes an upstream defect our line inherited: Inventory.schedule_deletion
+publishes delete_inventory.delay() from the API (web) process, whose
+dispatcherd queuename has no worker — the message vanishes and the inventory
+sits pending_deletion forever (observed live in the Phase-0 orphan
+experiment). The deletion pump now adopts any inventory still
+pending_deletion after two minutes and dispatches upstream's own
+delete_inventory task on a real worker queue.
+
+Tested by: live wedge repro on prod1 (schedule_deletion via API, observe
+adoption) + tripwire baseline.
+
+diff --git a/awx/main/tasks/org_deletion.py b/awx/main/tasks/org_deletion.py
+index fbdab3a..724ef21 100644
+--- a/awx/main/tasks/org_deletion.py
++++ b/awx/main/tasks/org_deletion.py
+@@ -69,6 +69,19 @@ def process_organization_deletions():
+         logger.info('organization %s (%s) lease expired at %s; scheduling deletion', org.pk, org.name, org.expires_at)
+         OrganizationDeletion.objects.create(organization=org, organization_id_snapshot=org.pk, organization_name=org.name)
+ 
++    # Upstream's async inventory deletion (Inventory.schedule_deletion) does
++    # delete_inventory.delay() from the WEB tier — the same silent-publish
++    # defect the organization pump exists to avoid (the web pod's queuename
++    # has no worker). Any inventory still pending_deletion after a couple of
++    # minutes was wedged by that path; adopt it here on a real worker queue.
++    from awx.main.models import Inventory
++    from awx.main.tasks.system import delete_inventory
++
++    wedged_after = now - timedelta(seconds=120)
++    for inv in Inventory.objects.filter(pending_deletion=True, modified__lt=wedged_after):
++        logger.info('adopting wedged pending_deletion inventory %s (%s)', inv.pk, inv.name)
++        delete_inventory.apply_async([inv.pk, None], queue=get_task_queuename())
++
+     stale = now - timedelta(seconds=STUCK_AFTER_SECONDS)
+     ready = OrganizationDeletion.objects.filter(state=OrganizationDeletion.STATE_PENDING)
+     stuck = OrganizationDeletion.objects.filter(
