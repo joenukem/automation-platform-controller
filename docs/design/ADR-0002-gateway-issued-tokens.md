@@ -1,6 +1,6 @@
 # ADR-0002 — API tokens are gateway-issued; the controller consumes, never mints
 
-Status: PARTIALLY IMPLEMENTED · 2026-08-17 · Drives the CTL-030 token row and the
+Status: IMPLEMENTED (end-to-end proven) · 2026-08-17 · Drives the CTL-030 token row and the
 `tokens` delta in `docs/api-surface.lock` (triaged in phase1/REPORT.md).
 
 ## Context
@@ -58,13 +58,19 @@ Proven live: a Keycloak lab user (in `lab-temporary-users`, so carrying
 `controller:*` scopes) exchanges username+password for a well-formed access
 token — decoded and confirmed `aud=controller`, correct scopes, correct sub.
 
-**Open: Bearer acceptance on the proxied controller path.** The minted token
-is rejected (`invalid_token`) when presented to `/api/v2/…` through the
-gateway, even though the proxy identity chain includes the oauth manager as
-its bearer fallback and the token validates structurally. Signing-key vs
-store-lookup consistency across the running gateway build is the next thing to
-isolate. Until then, ex467-13's rework stays parked; the grant exists but the
-end-to-end lab flow is not yet green.
+**Bearer acceptance on the proxied controller path: FIXED and proven**
+(awx-gateway `cbf39e52`). The rejection was a latent gateway bug the password
+grant surfaced: `LookupAccessToken` required the stored record's UserID to
+equal the JWT `sub`, but the SQL store keys tokens on an internal `users.id`
+(upserted by username) while the JWT `sub` carries the external identity id —
+two id spaces that never match, so EVERY SQL-store bearer was rejected. It
+went unnoticed because the console authenticates with session cookies, not
+bearer tokens; the ROPC grant was the first path to present a bearer to the
+proxy. Removed the id-equality clause (authenticity still comes from the
+verified JWT signature/claims and the unrevoked stored token hash; client_id
+and scopes are still checked). Proven live: `probe-kc` mints a password-grant
+token and calls the controller `/api/v2/me/` and `/ping/` through the gateway
+— 200, correct user. ex467-13's rework is now unblocked.
 
 The pull-policy detail worth keeping: the OAP gateway deployment runs
 `imagePullPolicy: Never` (node-local images) — a registry-tagged overlay
