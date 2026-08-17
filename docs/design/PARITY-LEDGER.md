@@ -51,7 +51,8 @@ feature without a ruling is a gap in this document, not silent scope.
 | Inventory source plugins: ec2, azure_rm, gce, vmware, openstack, satellite, controller, terraform (2.6+), OpenShift Virtualization (2.6+) | FULL (F-INV) | one plugin cluster; enable per-plugin as course demand appears; creds are the hard part |
 | Fact caching (per-host ansible_facts, cache timeout) | FULL (F-EXEC) | |
 | Bulk host create/delete API | IN-1.0 | provider uses bulk paths for speed |
-| Host metrics / indirect node counting (2.5+) | OUT | subscription counting machinery |
+| Host metrics / indirect-node counting — telemetry code | **INHERITED (present, inert-by-default)** | **SPLIT 2026-08-17: `IndirectManagedNodeAudit`, `host_metric*` commands, `collectors.py host_metric_table`, migration 0196 all inherited. Could target a self-hosted sink.** |
+| Host-count **entitlement enforcement** (RHSM/candlepin) | OUT | subscription machinery (`utils/licensing.py`, `SUBSCRIPTIONS_RHSM_URL`) — the enforcement half only |
 | Provisioning callbacks (`/job_templates/N/callback/`) | FULL (F-EXEC) | classic PXE/cloud-init pattern; cheap |
 
 ## 4. Execution resources
@@ -117,7 +118,7 @@ feature without a ruling is a gap in this document, not silent scope.
 | Analytics gathering/shipping to Automation Analytics (console.redhat.com) | OUT | Red Hat SaaS |
 | Subscription/entitlement enforcement, license counting | OUT | trademark/subscription machinery |
 | Automation dashboard (2.7 tech preview) | OUT (revisit) | platform has its own telemetry consoles |
-| Policy as code (OPA integration, 2.6+ preview) | OUT (revisit) | platform's policy repo covers the need |
+| Policy as code (OPA integration, 2.6+ preview) | **IN-1.0 (enable) / FULL (F-OPS, breadth)** | **CORRECTED 2026-08-17 (was OUT): fully wired in devel — `evaluate_policy()` at `tasks/jobs.py:670`, `opa_query_path` field (migration 0197), `OPA_HOST/PORT/SSL` settings, `tests/functional/test_policy.py`. Inherited controller code, gated only on an OPA server. Enable + test = a real differentiator. See FULL-PARITY-DESIGN.md §5.5.** |
 | Custom branding/login | GATEWAY | console/gateway concern |
 
 ## Ledger accounting (2026-08-16)
@@ -128,3 +129,14 @@ feature without a ruling is a gap in this document, not silent scope.
 
 Every OUT ruling is reviewable; nothing is silently absent. The FULL clusters
 are sequenced and costed in `FULL-PARITY-PLAN.md`.
+
+**2026-08-17 code-grounded audit** (`FULL-PARITY-DESIGN.md`): a per-cluster audit
+against the pinned upstream tree found the FULL clusters are **~70–75% INHERITED**
+(code present; owed conformance tests, not code), **~15% GATEWAY/OTHER-SERVICE**,
+**~8–10% OUT**, and only **~2–5% genuine net-new controller code** — the branding-
+neutral product-name gate, pod-native backup/restore, the mesh-CA seam fix, and a
+conditional service-token wire. Several rows are corrected above (OPA, host-metrics)
+or re-marked in the design doc (F-EXEC/NOTIFY/INV/CRED "FULL (build)" →
+"INHERITED — conformance pending"; `ansible.controller` split from `ansible.platform`;
+MCP/dashboard `OUT`→`OTHER-SERVICE`). The honest bottom line: full parity is a
+*prove-what-we-inherit* effort, not a build.
