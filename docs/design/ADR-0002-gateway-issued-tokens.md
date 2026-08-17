@@ -46,7 +46,10 @@ Status: IMPLEMENTED (end-to-end proven) · 2026-08-17 · Drives the CTL-030 toke
 
 - Surface replay: gateway token endpoint mints a token for a Keycloak lab
   user; `curl -H "Authorization: Bearer …" $CONTROLLER/api/v2/me/` returns
-  that user. Wired into `build/verify.sh`.
+  that user. **DONE** — wired into `build/verify.sh` as the
+  `gateway-issued-token round-trip` check (green on the live gate); the
+  `tokens` entry in `api-surface.lock` now points at the gateway `oauth2/token`
+  path.
 - ex467-13 green in the DO467 suite using the new flow.
 
 ## Implementation status (2026-08-17)

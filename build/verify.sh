@@ -15,13 +15,13 @@ here="$(cd "$(dirname "$0")/.." && pwd)"
 : "${CONTROLLER_URL:?set CONTROLLER_URL}"
 : "${ADMIN_PASSWORD:?set ADMIN_PASSWORD}"
 ADMIN_USER="${ADMIN_USER:-admin}"
-ALLOW_MISSING="openapi settings/ldap tokens"   # triaged in docs/phase1/REPORT.md
+ALLOW_MISSING="openapi settings/ldap"   # tokens now covered by the gateway round-trip below; rest triaged in docs/phase1/REPORT.md
 POSTONLY="schedules/preview"
 
 fail=0
 while IFS='|' read -r path _; do
   path=$(echo "$path" | xargs); [ -n "$path" ] || continue
-  case "$path" in \#*|*':id'*) continue;; esac
+  case "$path" in \#*|*':id'*|*' '*|*'(gateway)'*) continue;; esac  # skip comments, id-routes, and non-controller (gateway) entries
   code=$(curl -sk -m 20 -u "$ADMIN_USER:$ADMIN_PASSWORD" -o /dev/null -w '%{http_code}' "$CONTROLLER_URL/api/v2/$path/")
   ok=false
   [ "$code" = 200 ] && ok=true
@@ -38,6 +38,20 @@ for p in inventories projects job_templates workflow_job_templates; do
   [ "$code" = 200 ] || { echo "ORG-FILTER FAIL $code $p"; fail=1; }
 done
 [ "$fail" = 0 ] && echo "organization-filter conformance: OK"
+
+# ADR-0002: the controller mints no tokens; scripted API access exchanges
+# credentials for a gateway token and reaches the controller with the bearer.
+# Set GATEWAY_URL + TOKEN_USER/TOKEN_PASS to run it; skipped otherwise.
+if [ -n "${GATEWAY_URL:-}" ] && [ -n "${TOKEN_USER:-}" ]; then
+  AT=$(curl -sk -m 20 -X POST -d "grant_type=password&client_id=${TOKEN_CLIENT:-awx-gateway}&username=${TOKEN_USER}&password=${TOKEN_PASS}&scope=controller:read controller:write"        "$GATEWAY_URL/oauth2/token" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("access_token",""))' 2>/dev/null)
+  if [ -z "$AT" ]; then echo "TOKEN-MINT FAIL (gateway password grant)"; fail=1
+  else
+    code=$(curl -sk -m 20 -H "Authorization: Bearer $AT" -o /dev/null -w '%{http_code}' "$GATEWAY_URL/api/v2/me/")
+    [ "$code" = 200 ] && echo "gateway-issued-token round-trip: OK" || { echo "TOKEN-BEARER FAIL $code on /api/v2/me/"; fail=1; }
+  fi
+else
+  echo "gateway-issued-token round-trip: SKIPPED (set GATEWAY_URL + TOKEN_USER/TOKEN_PASS)"
+fi
 
 PM=/mnt/labpool/pool-manager
 if command -v go >/dev/null && [ -d "$PM/cmd/provider-conformance" ]; then

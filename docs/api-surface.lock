@@ -50,7 +50,7 @@ settings/ldap                                                          | labs
 teams                                                                  | labs,provider
 teams/:id                                                              | labs
 teams/:id/users                                                        | labs
-tokens                                                                 | labs
+oauth2/token (gateway)                                                 | labs   # ADR-0002: minted at the gateway, not /api/v2/tokens/
 unified_jobs                                                           | console
 users                                                                  | console,labs,provider
 workflow_approvals                                                     | console
