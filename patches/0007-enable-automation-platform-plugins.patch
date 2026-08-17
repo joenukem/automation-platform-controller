@@ -1,0 +1,72 @@
+diff --git a/awx/api/generics.py b/awx/api/generics.py
+index 67b0d46..3752838 100644
+--- a/awx/api/generics.py
++++ b/awx/api/generics.py
+@@ -284,7 +284,7 @@ class APIView(views.APIView):
+         time_started = getattr(self, 'time_started', None)
+         if request.user.is_authenticated:
+             response['X-API-Product-Version'] = get_awx_version()
+-        response['X-API-Product-Name'] = detect_server_product_name()
++        response['X-API-Product-Name'] = 'Automation Platform'
+ 
+         response['X-API-Node'] = settings.CLUSTER_HOST_ID
+         if time_started:
+diff --git a/awx/main/models/credential.py b/awx/main/models/credential.py
+index bb8a1e9..20b0ee1 100644
+--- a/awx/main/models/credential.py
++++ b/awx/main/models/credential.py
+@@ -666,7 +666,10 @@ def load_credentials():
+ 
+     awx_entry_points = {ep.name: ep for ep in entry_points(group='awx_plugins.managed_credentials')}
+     supported_entry_points = {ep.name: ep for ep in entry_points(group='awx_plugins.managed_credentials.supported')}
+-    plugin_entry_points = awx_entry_points if detect_server_product_name() == 'AWX' else {**awx_entry_points, **supported_entry_points}
++    # automation-platform: this build IS the Automation Platform controller (the maintained
++    # post-split upstream line), not plain AWX — the supported managed credential types are
++    # part of the product surface, so register both the community and supported sets.
++    plugin_entry_points = {**awx_entry_points, **supported_entry_points}
+ 
+     for ns, ep in plugin_entry_points.items():
+         if _is_oidc_namespace_disabled(ns):
+@@ -685,9 +688,11 @@ def load_credentials():
+             )
+         ManagedCredentialType.registry[ns] = cred_plugin
+ 
++    # automation-platform: external-secret credential plugins (HashiCorp Vault incl. OIDC,
++    # Conjur, CyberArk AIM, Azure Key Vault, AWS Secrets Manager, Delinea, Centrify, GitHub
++    # App, ...) are part of the Automation Platform product; keep them enabled (upstream
++    # disables the whole set under the plain-AWX identity).
+     credential_plugins = {ep.name: ep for ep in entry_points(group='awx_plugins.credentials')}
+-    if detect_server_product_name() == 'AWX':
+-        credential_plugins = {}
+ 
+     for ns, ep in credential_plugins.items():
+         if _is_oidc_namespace_disabled(ns):
+diff --git a/awx/main/models/inventory.py b/awx/main/models/inventory.py
+index f323688..58f774c 100644
+--- a/awx/main/models/inventory.py
++++ b/awx/main/models/inventory.py
+@@ -930,8 +930,9 @@ class HostMetricSummaryMonthly(models.Model):
+ 
+ 
+ def _load_inventory_plugins():
+-    is_awx = detect_server_product_name() == 'AWX'
+-    extra_entry_point_groups = () if is_awx else ('inventory.supported',)
++    # automation-platform: load the supported (redhat.*/ansible.*) inventory source plugins
++    # in addition to the community ones — they are part of the product surface.
++    extra_entry_point_groups = ('inventory.supported',)
+     all_entry_points = load_all_entry_points_for(['inventory', *extra_entry_point_groups])
+ 
+     for entry_point_name, entry_point in all_entry_points.items():
+diff --git a/awx/ui/urls.py b/awx/ui/urls.py
+index 108607b..ae32550 100644
+--- a/awx/ui/urls.py
++++ b/awx/ui/urls.py
+@@ -15,7 +15,7 @@ class MigrationsNotran(TemplateView):
+ 
+     def get_context_data(self, **kwargs):
+         context = super().get_context_data(**kwargs)
+-        product_name = detect_server_product_name()
++        product_name = 'Automation Platform'
+         context['title'] = _('%s Upgrading' % product_name)
+         context['image_alt'] = _('Logo')
+         context['aria_spinner'] = _('Loading')
