@@ -37,6 +37,11 @@ kubectl -n "$NS" set resources deploy/awx-controller-task -c awx-task \
 # 1782s) against ~1-10m of actual use. See AAP-PLATFORM-DEFECTS F30.
 kubectl -n "$NS" set resources deploy/awx-controller-task -c receptor \
   --requests=cpu=100m,memory=128Mi --limits=cpu="${RECEPTOR_CPU:-2}",memory=512Mi
+# ... and off client-go's default request rate (QPS 5 / burst 10), which throttles the
+# same streams from the other side: "client rate limiter Wait returned an error: context
+# canceled" in the receptor log, then EOF on the pod's stdout, then the job is `error`.
+kubectl -n "$NS" set env deploy/awx-controller-task -c receptor \
+  RECEPTOR_KUBE_CLIENTSET_QPS="${RECEPTOR_QPS:-50}" RECEPTOR_KUBE_CLIENTSET_BURST="${RECEPTOR_BURST:-100}"
 
 kubectl -n "$NS" rollout status deploy/awx-controller-web --timeout=300s
 kubectl -n "$NS" rollout status deploy/awx-controller-postgres --timeout=300s

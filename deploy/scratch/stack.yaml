@@ -673,6 +673,16 @@ spec:
         env:
         - name: HOME
           value: /var/lib/receptor
+        # receptor talks to the Kubernetes API for every job: create the pod, poll it,
+        # and stream its stdout. On client-go's defaults (QPS 5, burst 10) a handful of
+        # concurrent jobs queue requests past their context deadline — the log stream
+        # then reads EOF and the job dies as `error` with "Unexpected empty line
+        # encountered during worker stream" (F30). The tell in the receptor log is
+        # "client rate limiter Wait returned an error: context canceled".
+        - name: RECEPTOR_KUBE_CLIENTSET_QPS
+          value: "50"
+        - name: RECEPTOR_KUBE_CLIENTSET_BURST
+          value: "100"
         volumeMounts:
         - name: receptor-config
           mountPath: /etc/receptor
