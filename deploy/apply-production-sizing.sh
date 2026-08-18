@@ -14,6 +14,8 @@
 #   web:      3 replicas x 4 CPU        (list serialization is CPU-bound)
 #   postgres: 4 CPU / 2Gi               (list reads + provisioning writes)
 #   task:     awx-task 6Gi              (org-deletion reaper working set at 10x)
+#   receptor: 2 CPU                     (streams every job pod's stdout; throttling it
+#                                        aborts jobs outright — F30)
 set -euo pipefail
 NS="${NS:-automation-platform}"
 export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/labpool-prod1-k3s.yaml}"
@@ -26,6 +28,15 @@ kubectl -n "$NS" set resources deploy/awx-controller-postgres -c postgres \
   --requests=cpu=500m,memory=512Mi --limits=cpu="${PG_CPU:-4}",memory=2Gi
 kubectl -n "$NS" set resources deploy/awx-controller-task -c awx-task \
   --requests=cpu=500m,memory=1Gi --limits=cpu=2,memory="${TASK_MEM:-6Gi}"
+# receptor was never in this script and stayed on the scratch profile's 250m, which is
+# a correctness limit rather than a performance one: it streams the stdout of every
+# container-group job pod, and when it is throttled those streams EOF, receptor
+# exhausts its read retries, and jobs die as `error` with "Unexpected empty line
+# encountered during worker stream" — intermittently, under exactly the concurrency a
+# CI run produces. Measured at 250m on prod1: 68% of CPU periods throttled (9961/14576,
+# 1782s) against ~1-10m of actual use. See AAP-PLATFORM-DEFECTS F30.
+kubectl -n "$NS" set resources deploy/awx-controller-task -c receptor \
+  --requests=cpu=100m,memory=128Mi --limits=cpu="${RECEPTOR_CPU:-2}",memory=512Mi
 
 kubectl -n "$NS" rollout status deploy/awx-controller-web --timeout=300s
 kubectl -n "$NS" rollout status deploy/awx-controller-postgres --timeout=300s

@@ -684,13 +684,20 @@ spec:
           mountPath: /var/lib/awx/projects
         - name: awx-job-status
           mountPath: /var/lib/awx/job_status
+        # receptor streams the stdout of EVERY container-group job pod through the
+        # Kubernetes API. Throttling it does not slow jobs down, it kills them: the
+        # log stream reads time out, receptor logs "Detected Error: EOF for pod ...",
+        # exhausts its retries, and the job is marked `error` with "Unexpected empty
+        # line encountered during worker stream" (AAP-PLATFORM-DEFECTS F30). Measured
+        # on prod1 at cpu=250m: 9961 of 14576 periods throttled, 1782s of throttled
+        # time, while the container's own steady-state usage is ~1-10m.
         resources:
           limits:
-            cpu: 250m
-            memory: 256Mi
+            cpu: "2"
+            memory: 512Mi
           requests:
-            cpu: 50m
-            memory: 64Mi
+            cpu: 100m
+            memory: 128Mi
       - name: awx-task
         image: franken-registry.example.com:5000/automation-platform/controller:0.0.1-phase0
         imagePullPolicy: IfNotPresent
