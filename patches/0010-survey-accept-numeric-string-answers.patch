@@ -1,0 +1,87 @@
+Subject: [PATCH] survey: accept a numeric string answer for integer/float questions
+
+A survey answer is validated with a strict type check:
+
+    elif survey_element['type'] == 'integer':
+        if type(data[survey_element['variable']]) != int:
+            errors.append("Value %s for '%s' expected to be an integer." ...)
+
+so an answer that arrives as the STRING "4" is refused and the job never starts:
+
+    POST /api/v2/job_templates/<id>/launch/
+      {"extra_vars": {"replica_count": "4"}}
+    400 {"variables_needed_to_start":
+         ["Value 4 for 'replica_count' expected to be an integer."]}
+
+Browsers and HTML form controls yield strings, so this rejects a correct answer
+typed into a number field by any client, including the platform console. It stays
+hidden until someone actually types a value: an answer taken from the question's
+DEFAULT is stored as a number and validates fine, which is why a survey lab can
+pass while typing the same value fails.
+
+The error also reads as if the VALUE were wrong ("Value 4 ... expected to be an
+integer") when the value is right and only its JSON type is not.
+
+Coerce a clean numeric string to the declared type before validating, in place, so
+the job also runs with the declared type rather than merely passing validation.
+Anything that is not a clean numeric string is left untouched, so genuinely wrong
+input still reports the original error.
+
+--- a/awx/main/models/mixins.py
++++ b/awx/main/models/mixins.py
+@@ -96,6 +96,39 @@
+         return cls.objects.filter(pk__in=ResourceMixin._accessible_pk_qs(cls, accessor, role_field))
+ 
+ 
++def _coerce_survey_numeric(survey_element, data):
++    """Coerce a numeric string answer to the survey question's declared type.
++
++    A survey answer arrives as whatever the client sent. Browsers and HTML form
++    controls yield strings, so a perfectly valid answer to an `integer` question
++    arrives as "4" and the strict `type(...) != int` check below rejects the launch
++    with "Value 4 for 'x' expected to be an integer." The job never starts, and the
++    caller gets an error that reads as if the value were wrong rather than its JSON
++    type. A question answered from its DEFAULT is unaffected, because defaults are
++    stored as numbers -- so the failure only appears once a value is actually typed.
++
++    Coerces in place so the job runs with the declared type as well as validating,
++    and leaves anything that is not a clean numeric string untouched so genuinely
++    wrong input still reports the original error.
++    """
++    variable = survey_element.get('variable')
++    if variable not in data:
++        return
++    value = data[variable]
++    if not isinstance(value, str):
++        return
++    text = value.strip()
++    if not text:
++        return
++    try:
++        if survey_element.get('type') == 'integer':
++            data[variable] = int(text)
++        else:
++            data[variable] = float(text)
++    except (TypeError, ValueError):
++        return
++
++
+ class SurveyJobTemplateMixin(models.Model):
+     class Meta:
+         abstract = True
+@@ -247,6 +280,7 @@
+ 
+         elif survey_element['type'] == 'integer':
+             if survey_element['variable'] in data:
++                _coerce_survey_numeric(survey_element, data)
+                 if type(data[survey_element['variable']]) != int:
+                     errors.append("Value %s for '%s' expected to be an integer." % (data[survey_element['variable']], survey_element['variable']))
+                     return errors
+@@ -272,6 +306,7 @@
+                     )
+         elif survey_element['type'] == 'float':
+             if survey_element['variable'] in data:
++                _coerce_survey_numeric(survey_element, data)
+                 if type(data[survey_element['variable']]) not in (float, int):
+                     errors.append("Value %s for '%s' expected to be a numeric type." % (data[survey_element['variable']], survey_element['variable']))
+                     return errors
