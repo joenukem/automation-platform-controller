@@ -8,3 +8,4 @@
 0007-enable-automation-platform-plugins.patch
 0008-test-injector-parametrize-external-safe.patch
 0009-webhookkey-permission-anonymous-401.patch
+0010-receptor-recover-status-when-stream-closes-early.patch

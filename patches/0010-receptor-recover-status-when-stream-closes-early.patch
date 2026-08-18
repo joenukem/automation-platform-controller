@@ -1,0 +1,102 @@
+From: automation-platform-controller stewardship
+Subject: [PATCH] receptor: recover a completed work unit's status when its stream closes early
+
+A container-group job that RAN TO COMPLETION was being recorded as `error` with no rc.
+ansible-runner's streaming Processor treats any zero-length read as fatal
+("Unexpected empty line encountered during worker stream. Worker did not produce events
+or streaming was aborted, check execution node health."), and on a short job the pod
+exits — closing the stream — between the last event and the final status frame.
+
+Observed on prod1 (lab-content AAP-PLATFORM-DEFECTS F30): a checker job whose own event
+stream ended with a green PLAY RECAP and "All assertions passed" was finalized as `error`
+with rc=None, and receptor was then told to cancel the unit it had already finished.
+Jobs that took 7s were fine; the ones that aborted took 3-4s.
+
+The two systemic aggravators are fixed in deployment (receptor CPU limit, and its
+Kubernetes client's QPS/burst). This is the remaining race, and it is a correctness bug:
+the platform must not report a phantom failure for work that succeeded.
+
+Fix: when the processor reports `error` but receptor says the work unit Succeeded and we
+processed events, re-read the tail of the unit's stdout and use the last terminal status
+frame it carries. When no such frame can be read, the original error stands.
+
+Tested: build/test.sh baseline, then on prod1 by running the reproducer (12 concurrent
+launches of one job template) and a full button-CI lab run.
+---
+diff --git a/awx/main/tasks/receptor.py b/awx/main/tasks/receptor.py
+index e1ccf4d..4332b5b 100644
+--- a/awx/main/tasks/receptor.py
++++ b/awx/main/tasks/receptor.py
+@@ -3,6 +3,7 @@ from base64 import b64encode
+ from collections import namedtuple
+ import concurrent.futures
+ from enum import Enum
++import json
+ import logging
+ import os
+ import shutil
+@@ -536,6 +537,26 @@ class AWXReceptorJob:
+                     stdout_size = 0
+                     logger.exception(f'An error was encountered while getting status for work unit {self.unit_id}')
+ 
++                # A work unit that RAN TO COMPLETION must not be reported as an error just
++                # because its stdout stream closed before the final status frame arrived.
++                # ansible-runner's Processor treats any zero-length read as fatal
++                # ("Unexpected empty line encountered during worker stream"), and on a short
++                # container-group job the pod can exit — closing the stream — between the
++                # last event and that frame. The job is then recorded as `error` with no rc,
++                # while its own events show a completed play. Trust the work unit: if
++                # receptor says it Succeeded and we processed events, recover the terminal
++                # status from the tail of its stdout.
++                if state_name == 'Succeeded' and self.task.runner_callback.event_ct > 0:
++                    recovered = self._recover_status_from_work_results(receptor_ctl, stdout_size)
++                    if recovered is not None:
++                        logger.warning(
++                            f'Recovered terminal status {recovered.status} for '
++                            f'{self.task.instance.log_format} from work unit {self.unit_id}; '
++                            'its result stream closed before the final status frame.'
++                        )
++                        self.task.runner_callback.extra_update_fields.pop('job_explanation', None)
++                        return recovered
++
+                 if 'exceeded quota' in detail:
+                     logger.warning(detail)
+                     log_name = self.task.instance.log_format
+@@ -565,6 +586,37 @@ class AWXReceptorJob:
+ 
+         return res
+ 
++    def _recover_status_from_work_results(self, receptor_ctl, stdout_size):
++        """Return the runner's terminal status from the tail of a work unit's stdout.
++
++        The stream carries one JSON frame per line; the last frame with a terminal
++        `status` is the result ansible-runner would have reported had the stream stayed
++        open. Returns None when no such frame can be read, so the caller keeps the
++        original error.
++        """
++        startpos = max(int(stdout_size or 0) - 65536, 0)
++        try:
++            resultsock, resultfile = receptor_ctl.get_work_results(self.unit_id, startpos=startpos, return_socket=True, return_sockfile=True)
++            try:
++                lines = resultfile.readlines()
++            finally:
++                resultsock.shutdown(socket.SHUT_RDWR)
++                resultfile.close()
++        except Exception:
++            logger.exception(f'Could not re-read work results for unit {self.unit_id}')
++            return None
++
++        result = namedtuple('result', ['status', 'rc'])
++        for line in reversed(lines):
++            try:
++                frame = json.loads(line)
++            except Exception:
++                continue
++            status = frame.get('status')
++            if status in ('successful', 'failed', 'canceled', 'timeout'):
++                return result(status, frame.get('rc', 0 if status == 'successful' else 1))
++        return None
++
+     # Spawned in a thread so Receptor can start reading before we finish writing, we
+     # write our payload to the left side of our socketpair.
+     @cleanup_new_process
