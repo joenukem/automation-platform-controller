@@ -1,0 +1,59 @@
+diff --git a/pkg/workceptor/kubernetes.go b/pkg/workceptor/kubernetes.go
+index f4f0097..4229ff9 100644
+--- a/pkg/workceptor/kubernetes.go
++++ b/pkg/workceptor/kubernetes.go
+@@ -293,6 +293,18 @@ func (kw *KubeUnit) kubeLoggingNoReconnect(streamWait *sync.WaitGroup, stdout *S
+ 	}
+ }
+ 
++// podPhaseForLogging reports the pod's current phase, or an empty phase when it
++// cannot be read. It distinguishes "the pod finished, stop streaming" from "the
++// log stream broke while the pod is still producing output, keep reconnecting".
++func (kw *KubeUnit) podPhaseForLogging(podNamespace, podName string) corev1.PodPhase {
++	pod, err := KubeAPIWrapperInstance.Get(kw.GetContext(), kw.clientset, podNamespace, podName, metav1.GetOptions{})
++	if err != nil || pod == nil {
++		return ""
++	}
++
++	return pod.Status.Phase
++}
++
+ func (kw *KubeUnit) kubeLoggingWithReconnect(streamWait *sync.WaitGroup, stdout *STDoutWriter, stdinErr *error, stdoutErr *error) {
+ 	// preferred method for k8s >= 1.23.14
+ 	defer streamWait.Done()
+@@ -371,6 +383,35 @@ func (kw *KubeUnit) kubeLoggingWithReconnect(streamWait *sync.WaitGroup, stdout
+ 					break
+ 				}
+ 
++				// Exhausting the retry budget is NOT by itself evidence that the pod is
++				// done. The API server closes an idle `follow` stream, and the reconnect
++				// asks for logs SinceTime -- which has one-second granularity, so it
++				// replays lines this loop has already emitted. Those replayed lines are
++				// filtered out below (`!timeStamp.After(sinceTime) && !successfulWrite`),
++				// so nothing resets remainingRetries. A job that merely goes quiet for a
++				// second, which any ansible task longer than a moment does, burns all five
++				// retries in about a second and has its stream closed underneath a RUNNING
++				// pod. The controller then reads a zero-length line and finalizes a healthy
++				// job as `error` with rc=None ("Unexpected empty line encountered during
++				// worker stream").
++				//
++				// Ask the pod. While it is still Pending or Running there is more output
++				// coming, so refill the budget and reconnect; the loop still terminates,
++				// because a pod that reaches a terminal phase falls through to the original
++				// happy path below.
++				if phase := kw.podPhaseForLogging(podNamespace, podName); phase == corev1.PodPending || phase == corev1.PodRunning {
++					kw.GetWorkceptor().nc.GetLogger().Info(
++						"Log stream for pod %s/%s ended while the pod is still %s; reconnecting instead of closing its stdout.",
++						podNamespace,
++						podName,
++						phase,
++					)
++					remainingRetries = retries
++					time.Sleep(time.Second)
++
++					break
++				}
++
+ 				kw.GetWorkceptor().nc.GetLogger().Error("Error reading from pod %s/%s: %s", podNamespace, podName, err)
+ 
+ 				// At this point we exausted all retries, every retry we either failed to read OR we read but did not get newer msg

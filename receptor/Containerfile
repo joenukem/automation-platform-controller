@@ -1,0 +1,5 @@
+# The stock execution environment with only /usr/bin/receptor replaced by the
+# binary build/build-receptor.sh compiled from upstream receptor + receptor/patches.
+ARG BASE=franken-registry.example.com:5000/ansible/awx-ee:24.6.1
+FROM ${BASE}
+COPY receptor /usr/bin/receptor
