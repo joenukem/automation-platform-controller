@@ -490,17 +490,13 @@ spec:
           subPath: SECRET_KEY
           readOnly: true
         readinessProbe:
-          exec:
-            command:
-            - python3
-            - -c
-            - "import http.client, json, sys\nconn = http.client.HTTPConnection(\"\
-              127.0.0.1\", 8052, timeout=5)\nconn.request(\"GET\", \"/api/v2/ping/\"\
-              )\nresp = conn.getresponse()\nbody = resp.read()\nif resp.status !=\
-              \ 200:\n    sys.exit(1)\ntry:\n    json.loads(body.decode(\"utf-8\"\
-              ))\nexcept Exception:\n    sys.exit(1)\n"
+          httpGet:
+            path: /api/v2/ping/
+            port: 8052
+            scheme: HTTP
           initialDelaySeconds: 30
           periodSeconds: 10
+          timeoutSeconds: 5
           failureThreshold: 12
         resources:
           limits:
