@@ -1,0 +1,120 @@
+From: automation-platform-controller stewardship
+Subject: [PATCH] controller: count filtered unified-job results accurately
+
+Implements: CTL-010 and CTL-050 (lab-content AAP-PLATFORM-DEFECTS F215)
+
+The unified-jobs paginator deliberately uses the unfiltered table count to
+avoid the expensive RBAC UNION count on the default Jobs page.  That shortcut
+also runs after semantic filters, so `search`, `name`, `status`, and `type`
+responses advertise the size of the entire shared table rather than the size
+of the filtered result set.  Clients then render nonexistent pages and cannot
+rely on the list envelope's count.
+
+Keep the inexpensive count for unfiltered, ordering-only requests.  When a
+query parameter can narrow the queryset, temporarily use Django's standard
+paginator so the count and returned rows describe the same result set.  The
+regression covers both the console's `search` query and the exact `name`
+lookup while retaining the optimized unfiltered path.
+---
+diff --git a/awx/api/pagination.py b/awx/api/pagination.py
+--- a/awx/api/pagination.py
++++ b/awx/api/pagination.py
+@@ -97,6 +97,23 @@ class ActivityStreamPagination(Pagination):
+ class UnifiedJobPagination(Pagination):
+     django_paginator_class = UnifiedJobPaginator
+ 
++    # Preserve the inexpensive table-wide count for the unfiltered Jobs page,
++    # but do not report it as the size of a filtered result set.  Representation
++    # and pagination controls do not narrow the queryset; every other query
++    # parameter is handled as a semantic filter by the configured backends.
++    unfiltered_count_query_params = frozenset(
++        ('page', 'page_size', 'order', 'order_by', 'count_disabled', 'exclude', 'format', 'no_truncate')
++    )
++
++    def paginate_queryset(self, queryset, request, **kwargs):
++        original_paginator = self.django_paginator_class
++        try:
++            if set(request.query_params) - self.unfiltered_count_query_params:
++                self.django_paginator_class = DjangoPaginator
++            return super().paginate_queryset(queryset, request, **kwargs)
++        finally:
++            self.django_paginator_class = original_paginator
++
+ 
+ class LimitPagination(pagination.BasePagination):
+     default_limit = api_settings.PAGE_SIZE
+diff --git a/awx/main/tests/functional/api/test_unified_jobs_view.py b/awx/main/tests/functional/api/test_unified_jobs_view.py
+--- a/awx/main/tests/functional/api/test_unified_jobs_view.py
++++ b/awx/main/tests/functional/api/test_unified_jobs_view.py
+@@ -163,6 +163,26 @@ def _job_result(response, job_id):
+     raise AssertionError('job {} not found in {}'.format(job_id, [r['id'] for r in response.data['results']]))
+ 
+ 
++@pytest.mark.parametrize('query_param', ('search', 'name'))
++@pytest.mark.django_db
++def test_unified_jobs_filtered_count_matches_results(get, admin, job_factory, query_param):
++    target = job_factory()
++    target.name = 'f215-filter-target'
++    target.save(update_fields=['name'])
++    other = job_factory()
++    other.name = 'different-job'
++    other.save(update_fields=['name'])
++
++    response = get(
++        reverse('api:unified_job_list') + '?{}=f215-filter-target&page_size=25'.format(query_param),
++        admin,
++        expect=200,
++    )
++
++    assert response.data['count'] == 1
++    assert [row['id'] for row in response.data['results']] == [target.id]
++
++
+ @pytest.mark.django_db
+ def test_unified_jobs_list_includes_heavy_fields_by_default(get, admin, job_with_heavy_fields):
+     response = get(reverse('api:unified_job_list') + '?id={}'.format(job_with_heavy_fields.id), admin, expect=200)
+diff --git a/awx/main/tests/unit/api/test_pagination.py b/awx/main/tests/unit/api/test_pagination.py
+--- a/awx/main/tests/unit/api/test_pagination.py
++++ b/awx/main/tests/unit/api/test_pagination.py
+@@ -1,5 +1,7 @@
+ from unittest.mock import patch, MagicMock
+ 
++from django.core.paginator import Paginator as DjangoPaginator
++
+ from awx.api.pagination import ActivityStreamPaginator, ActivityStreamPagination, UnifiedJobPaginator, UnifiedJobPagination, DisabledPaginator
+ 
+ 
+@@ -121,3 +123,33 @@ class TestUnifiedJobPagination:
+ 
+         assert captured_class['during'] is DisabledPaginator
+         assert pagination.django_paginator_class is UnifiedJobPaginator
++
++    def test_filtering_request_temporarily_uses_standard_paginator(self):
++        pagination = UnifiedJobPagination()
++        request = MagicMock()
++        request.query_params = {'search': 'target', 'page_size': '25'}
++        captured_class = {}
++
++        def capture_paginator_class(self_inner, queryset, request, **kwargs):
++            captured_class['during'] = pagination.django_paginator_class
++
++        with patch('rest_framework.pagination.PageNumberPagination.paginate_queryset', capture_paginator_class):
++            pagination.paginate_queryset(MagicMock(), request)
++
++        assert captured_class['during'] is DjangoPaginator
++        assert pagination.django_paginator_class is UnifiedJobPaginator
++
++    def test_ordering_request_preserves_unfiltered_paginator(self):
++        pagination = UnifiedJobPagination()
++        request = MagicMock()
++        request.query_params = {'order_by': '-created', 'page_size': '25'}
++        captured_class = {}
++
++        def capture_paginator_class(self_inner, queryset, request, **kwargs):
++            captured_class['during'] = pagination.django_paginator_class
++
++        with patch('rest_framework.pagination.PageNumberPagination.paginate_queryset', capture_paginator_class):
++            pagination.paginate_queryset(MagicMock(), request)
++
++        assert captured_class['during'] is UnifiedJobPaginator
++        assert pagination.django_paginator_class is UnifiedJobPaginator
