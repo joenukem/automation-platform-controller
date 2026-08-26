@@ -1,0 +1,97 @@
+Enable the DAB platform authenticator subsystem (ADR-0003)
+
+ansible_base.authentication is vendored at the sources.lock DAB SHA but was not
+in INSTALLED_APPS, so the whole platform authenticator surface was dead code in
+the image: 15 authenticator plugins (local, ldap, saml, oidc, keycloak, azuread,
+google_oauth2, github x6, radius, tacacs), the authenticator / authenticator_map
+/ authenticator_user models with all five map types, the full trigger grammar,
+and the /authenticators/, /authenticator_maps/, /authenticator_plugins/,
+/trigger_definition/, /ui_auth/ endpoints.
+
+Three changes, all required together:
+
+1. awx/settings/defaults.py — add 'ansible_base.authentication' to INSTALLED_APPS.
+   Nothing else is needed in settings: ansible_base.lib.dynamic_config.settings_logic
+   keys off this app being installed (settings_logic.py:147) to append the
+   AnsibleBaseAuth backend, insert SocialExceptionHandlerMiddleware +
+   AuthenticatorBackendMiddleware ahead of django.contrib.auth's AuthenticationMiddleware,
+   and prepend DAB's SessionAuthentication to DRF. URLs are likewise automatic:
+   dynamic_urls walks INSTALLED_APPS for ansible_base.* apps exposing urls.py, and
+   awx/urls.py already mounts its api_urls / api_version_urls / root_urls.
+
+2. requirements/requirements_git.txt — add the `authentication` extra to the
+   django-ansible-base pin. Without it social-auth-core, django-auth-ldap,
+   python-ldap, ldap-filter, python3-saml, tacacs_plus, pyrad and xmlsec are absent
+   and the plugins fail to import.
+
+3. tools/ansible/roles/dockerfile/templates/Dockerfile.j2 — add openldap-devel and
+   cyrus-sasl-devel to the builder stage and openldap to the runtime stage.
+   python-ldap is sdist-only on PyPI, so it compiles at install time; upstream
+   dropped the openldap headers when authentication moved to the gateway, and
+   xmlsec1-devel/swig (already present) cover python3-saml but not LDAP.
+
+Testing: `git apply --check` against sources.lock awx 3fea0704 is clean. A full
+image rebuild has NOT been run — the vendored-wheel bundle must be re-captured
+once with egress (build/vendor/Dockerfile.capture, updated in the same commit) before
+an airgap build can resolve the new dependencies, and the 18 authentication
+migrations must be applied to an existing database.
+
+Related: docs/design/ADR-0003-platform-authenticators.md, ADR-0002 (which this
+consciously qualifies), docs/design/PARITY-LEDGER.md.
+---
+diff --git a/awx/settings/defaults.py b/awx/settings/defaults.py
+index 58fdd6b..40d4c7b 100644
+--- a/awx/settings/defaults.py
++++ b/awx/settings/defaults.py
+@@ -360,6 +360,15 @@ INSTALLED_APPS = [
+     'ansible_base.rbac',
+     'ansible_base.feature_flags',
+     'ansible_base.api_documentation',
++    # automation-platform: the platform authenticator subsystem (local, LDAP, SAML,
++    # OIDC, Keycloak, Azure AD, Google, GitHub x6, RADIUS, TACACS+) plus authenticator
++    # maps, /authenticator_plugins/, /trigger_definition/ and /ui_auth/. Enabling the
++    # app is sufficient: ansible_base.lib.dynamic_config.settings_logic appends the
++    # AnsibleBaseAuth backend, inserts the Social/AuthenticatorBackend middleware ahead
++    # of django.contrib.auth's, and prepends DAB's SessionAuthentication to DRF; and
++    # dynamic_urls mounts ansible_base.authentication.urls, which awx/urls.py already
++    # includes. Requires the django-ansible-base[authentication] extra.
++    'ansible_base.authentication',
+     'flags',
+ ]
+ 
+diff --git a/requirements/requirements_git.txt b/requirements/requirements_git.txt
+index 1967608..7235ead 100644
+--- a/requirements/requirements_git.txt
++++ b/requirements/requirements_git.txt
+@@ -20,5 +20,5 @@
+ certifi @ git+https://github.com/ansible/system-certifi.git@devel
+ ansible-runner @ git+https://github.com/ansible/ansible-runner.git@devel
+ awx-plugins-core[credentials-github-app] @ git+https://github.com/ansible/awx-plugins.git@devel
+-django-ansible-base[feature-flags,jwt-consumer,rbac,resource-registry,rest-filters] @ git+https://github.com/ansible/django-ansible-base@devel
++django-ansible-base[authentication,feature-flags,jwt-consumer,rbac,resource-registry,rest-filters] @ git+https://github.com/ansible/django-ansible-base@devel
+ awx-plugins-interfaces @ git+https://github.com/ansible/awx_plugins.interfaces.git
+diff --git a/tools/ansible/roles/dockerfile/templates/Dockerfile.j2 b/tools/ansible/roles/dockerfile/templates/Dockerfile.j2
+index 009065f..7a00924 100644
+--- a/tools/ansible/roles/dockerfile/templates/Dockerfile.j2
++++ b/tools/ansible/roles/dockerfile/templates/Dockerfile.j2
+@@ -56,7 +56,9 @@ RUN dnf -y update && dnf install -y 'dnf-command(config-manager)' && \
+     swig \
+     unzip \
+     xmlsec1-devel \
+-    xmlsec1-openssl-devel
++    xmlsec1-openssl-devel \
++    openldap-devel \
++    cyrus-sasl-devel
+ 
+ # Add github.com to known hosts
+ RUN mkdir -p ~/.ssh && chmod 0700 ~/.ssh
+@@ -149,7 +151,8 @@ RUN dnf -y update && dnf install -y 'dnf-command(config-manager)' && \
+     vim-minimal \
+     which \
+     unzip \
+-    xmlsec1-openssl && \
++    xmlsec1-openssl \
++    openldap && \
+     dnf -y clean all
+ 
+ RUN pip3.12 install -vv virtualenv supervisor dumb-init build

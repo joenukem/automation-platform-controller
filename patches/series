@@ -11,3 +11,4 @@
 0010-receptor-recover-status-when-stream-closes-early.patch
 0011-job-template-execute-list-visibility.patch
 0012-managed-role-evaluation-repair.patch
+0013-enable-dab-authentication.patch

@@ -6,7 +6,11 @@ FROM ${MIRROR_BASE}/centos/centos:stream9
 USER root
 RUN dnf -y update && dnf install -y 'dnf-command(config-manager)' 'dnf-command(download)' epel-next-release && \
     dnf config-manager --set-enabled crb && \
-    dnf install -y python3.12 python3.12-pip python3.12-devel git-core createrepo_c
+    dnf install -y python3.12 python3.12-pip python3.12-devel git-core createrepo_c \
+      gcc gcc-c++ make swig openldap-devel xmlsec1-devel xmlsec1-openssl-devel libffi-devel
+# openldap-devel/swig build python-ldap (sdist-only on PyPI); xmlsec1-*-devel build
+# xmlsec for python3-saml. Both come from the django-ansible-base[authentication]
+# extra and have no wheels, so the headers must be present at capture time.
 WORKDIR /capture
 COPY requirements/ requirements/
 # pip wheel closure (both the pinned PyPI set and the git requirements)
@@ -31,7 +35,7 @@ RUN mkdir -p /vendor/rpms && cd /vendor/rpms && \
       libffi-devel libtool-ltdl-devel make nss patch postgresql postgresql-devel \
       python3.12 python3.12-devel python3.12-pip python3.12-setuptools \
       python3.12-packaging python3.12-psycopg2 swig unzip xmlsec1-devel \
-      xmlsec1-openssl-devel inotify-tools podman \
+      xmlsec1-openssl-devel inotify-tools podman openldap-devel openldap-clients cyrus-sasl-devel \
       acl git-lfs krb5-workstation nginx rsync subversion sudo vim-minimal which \
       xmlsec1-openssl && \
     curl -sL https://copr.fedorainfracloud.org/coprs/ansible/Rsyslog/repo/epel-9/ansible-Rsyslog-epel-9.repo -o /etc/yum.repos.d/ansible-Rsyslog-epel-9.repo && \
