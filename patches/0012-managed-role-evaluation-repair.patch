@@ -1,0 +1,129 @@
+From: automation-platform-controller stewardship
+Subject: [PATCH] controller: repair managed-role evaluations during sync
+
+Implements: CTL-020 and CTL-024 (lab-content AAP-PLATFORM-DEFECTS F180)
+
+Managed RoleDefinition synchronization updates the permission metadata, but a
+no-op permissions.set() does not emit an m2m signal. Persisted RoleEvaluation
+rows can therefore remain incomplete even though roles such as Inventory Admin
+and JobTemplate Execute correctly include their view permissions. Team members
+then authenticate successfully but receive empty resource lists.
+
+After runtime managed-role synchronization, recompute each managed ObjectRole
+and the user-assigned ancestor roles that inherit team permissions. Historical
+migration app registries are deliberately excluded. This repairs direct and
+team-derived evaluations across resource types without granting any additional
+permissions or forcing a database-wide recomputation.
+
+The regression removes the implied view evaluations for team-derived Inventory
+Admin and JobTemplate Execute assignments, re-runs managed-role sync, and proves
+both are restored.
+---
+diff --git a/awx/main/migrations/_dab_rbac.py b/awx/main/migrations/_dab_rbac.py
+--- a/awx/main/migrations/_dab_rbac.py
++++ b/awx/main/migrations/_dab_rbac.py
+@@ -295,6 +295,31 @@ def get_or_create_managed(name, description, ct, permissions, RoleDefinition):
+     return role_definition
+
+
++def repair_managed_role_evaluations(apps, managed_role_definitions):
++    """Repair cached direct and team-derived permissions after runtime sync."""
++    if apps is not global_apps:
++        # Historical migration models cannot be passed to the runtime cache.
++        return
++
++    from ansible_base.rbac.caching import bulk_ancestor_roles, recompute_role_evaluations
++
++    ObjectRole = apps.get_model('dab_rbac', 'ObjectRole')
++    RoleTeamAssignment = apps.get_model('dab_rbac', 'RoleTeamAssignment')
++    managed_role_ids = [role_definition.pk for role_definition in managed_role_definitions]
++    managed_object_roles = set(ObjectRole.objects.filter(role_definition_id__in=managed_role_ids))
++
++    # Users inherit a team's permissions through the ObjectRole that grants
++    # membership to that team. Recompute those ancestor roles as well as the
++    # managed ObjectRoles that carry the direct permission evaluations.
++    team_ids = set(
++        RoleTeamAssignment.objects.filter(object_role__in=managed_object_roles).values_list('team_id', flat=True)
++    )
++    if team_ids:
++        managed_object_roles.update(bulk_ancestor_roles(team_ids))
++    if managed_object_roles:
++        recompute_role_evaluations(managed_object_roles)
++
++
+ def setup_managed_role_definitions(apps, schema_editor):
+     """
+     Idempotent method to create or sync the managed role definitions
+@@ -437,6 +462,8 @@ def setup_managed_role_definitions(apps, schema_editor):
+     for role_definition in unexpected_role_definitions:
+         logger.info(f'Deleting old managed role definition {role_definition.name}, pk={role_definition.pk}')
+         role_definition.delete()
++
++    repair_managed_role_evaluations(apps, managed_role_definitions)
+
+
+ def get_team_to_team_relationships(apps, team_member_role):
+diff --git a/awx/main/tests/functional/dab_rbac/test_translation_layer.py b/awx/main/tests/functional/dab_rbac/test_translation_layer.py
+--- a/awx/main/tests/functional/dab_rbac/test_translation_layer.py
++++ b/awx/main/tests/functional/dab_rbac/test_translation_layer.py
+@@ -3,14 +3,17 @@ import json
+
+ import pytest
+
++from django.apps import apps as global_apps
++
+ from crum import impersonate
+
+ from awx.main.fields import ImplicitRoleField
++from awx.main.migrations._dab_rbac import setup_managed_role_definitions
+ from awx.main.models.rbac import get_role_from_object_role, give_creator_permissions, get_role_codenames, get_role_definition
+ from awx.main.models import User, Organization, WorkflowJobTemplate, WorkflowJobTemplateNode, Team
+ from awx.api.versioning import reverse
+
+-from ansible_base.rbac.models import RoleUserAssignment, RoleDefinition
++from ansible_base.rbac.models import RoleEvaluation, RoleUserAssignment, RoleDefinition
+ from ansible_base.rbac import permission_registry
+
+
+@@ -115,6 +117,41 @@ def test_organization_admin_has_audit(setup_managed_roles):
+     assert 'audit_organization' in rd.permissions.values_list('codename', flat=True)
+
+
++@pytest.mark.django_db
++def test_managed_role_sync_repairs_team_derived_view_evaluations(
++    user, organization, inventory, job_template, setup_managed_roles
++):
++    team = Team.objects.create(name='managed-role-repair-team', organization=organization)
++    team_member = user('managed-role-repair-user')
++    RoleDefinition.objects.get(name='Team Member').give_permission(team_member, team)
++
++    RoleDefinition.objects.get(name='Inventory Admin').give_permission(team, inventory)
++    RoleDefinition.objects.get(name='JobTemplate Execute').give_permission(team, job_template)
++    assert team_member.has_obj_perm(inventory, 'view')
++    assert team_member.has_obj_perm(job_template, 'view')
++
++    member_role_ids = team_member.role_assignments.values_list('object_role_id', flat=True)
++    RoleEvaluation.objects.filter(
++        role_id__in=member_role_ids,
++        codename='view_inventory',
++        object_id=inventory.pk,
++    ).delete()
++    RoleEvaluation.objects.filter(
++        role_id__in=member_role_ids,
++        codename='view_jobtemplate',
++        object_id=job_template.pk,
++    ).delete()
++    assert not team_member.has_obj_perm(inventory, 'view')
++    assert not team_member.has_obj_perm(job_template, 'view')
++
++    setup_managed_role_definitions(global_apps, None)
++
++    assert team_member.has_obj_perm(inventory, 'view')
++    assert team_member.has_obj_perm(inventory, 'change')
++    assert team_member.has_obj_perm(job_template, 'view')
++    assert team_member.has_obj_perm(job_template, 'execute')
++
++
+ @pytest.mark.django_db
+ def test_organization_level_permissions(organization, inventory, setup_managed_roles):
+     u1 = User.objects.create(username='alice')

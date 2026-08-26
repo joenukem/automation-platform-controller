@@ -86,7 +86,9 @@ the console and API, not assumed.
 
 - **CTL-020 (P0)** — Organizations, users, teams; DAB-based RBAC with role
   definitions and object-level role assignments (`role_user_assignments`,
-  `role_team_assignments` API used by the labs' verify scripts).
+  `role_team_assignments` API used by the labs' verify scripts). Managed-role
+  synchronization repairs persisted direct and team-derived evaluations so
+  every permission listed by the role remains effective after an upgrade.
 - **CTL-021 (P0)** — Credentials, credential types (custom types included),
   credential plugins via `awx-plugins`; machine/SCM/registry credentials.
 - **CTL-022 (P0)** — Projects with git SCM sync (gitea), sync-on-launch,
