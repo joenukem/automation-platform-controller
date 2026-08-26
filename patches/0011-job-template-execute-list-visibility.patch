@@ -1,0 +1,87 @@
+From: automation-platform-controller stewardship
+Subject: [PATCH] controller: list job templates granted through Execute
+
+Implements: CTL-024 (lab-content AAP-PLATFORM-DEFECTS F180)
+
+The job-template list filtered only on view_jobtemplate. JobTemplate Execute is
+defined to include view, but persisted RoleEvaluation data can retain the execute
+partial without the implied view partial after managed-role synchronization. In
+that state a delegate can execute a template by ID but the template list is empty.
+
+Treat execute_jobtemplate itself as sufficient list visibility. This preserves
+least privilege: Execute still grants neither change nor delete, and templates
+without either view or execute remain hidden.
+
+Tested by the endpoint regression below, which exercises a team member with the
+managed Execute assignment, removes the cached implied-view partial to reproduce
+the observed persisted state, and verifies that only the executable template is
+listed.
+---
+diff --git a/awx/main/access.py b/awx/main/access.py
+--- a/awx/main/access.py
++++ b/awx/main/access.py
+@@ -1477,6 +1477,12 @@ class JobTemplateAccess(NotificationAttachMixin, UnifiedCredentialsMixin, BaseAc
+         Prefetch('last_job', queryset=UnifiedJob.objects.non_polymorphic()),
+     )
+
++    def filtered_queryset(self):
++        # Execute is a read-like permission for launchable templates. Query it
++        # explicitly so a stale implied-view evaluation cannot hide a template
++        # that the user is authorized to launch.
++        return (self.model.access_qs(self.user, 'view') | self.model.access_qs(self.user, 'execute')).distinct()
++
+     def can_add(self, data):
+         """
+         a user can create a job template if
+diff --git a/awx/main/tests/functional/dab_rbac/test_unified_job_access.py b/awx/main/tests/functional/dab_rbac/test_unified_job_access.py
+--- a/awx/main/tests/functional/dab_rbac/test_unified_job_access.py
++++ b/awx/main/tests/functional/dab_rbac/test_unified_job_access.py
+@@ -3,7 +3,7 @@ import pytest
+ from django.test.utils import CaptureQueriesContext
+ from django.db import connection
+
+-from ansible_base.rbac.models import RoleDefinition
++from ansible_base.rbac.models import RoleDefinition, RoleEvaluation
+
+ from awx.api.versioning import reverse
+ from awx.main.models import (
+@@ -137,6 +137,39 @@ def test_unified_job_list_team_member_sees_team_granted_jobs(user, setup_managed
+     assert job.pk in result_ids, f"Team member should see job {job.pk} via team-granted JT execute permission, " f"but got result IDs: {result_ids}"
+
+
++@pytest.mark.django_db
++def test_job_template_list_team_execute_survives_missing_implied_view(user, setup_managed_roles, get):
++    """Execute remains sufficient for list visibility if its implied-view
++    evaluation is missing from persisted RBAC data."""
++    org = Organization.objects.create(name='jt-list-team-org')
++    team = Team.objects.create(name='jt-list-team', organization=org)
++    team_user = user('jt-list-team-member')
++    RoleDefinition.objects.get(name='Team Member').give_permission(team_user, team)
++
++    inventory = org.inventories.create(name='jt-list-inventory')
++    project = Project.objects.create(name='jt-list-project', organization=org)
++    executable_jt = JobTemplate.objects.create(name='jt-list-executable', project=project, inventory=inventory, organization=org)
++    hidden_jt = JobTemplate.objects.create(name='jt-list-hidden', project=project, inventory=inventory, organization=org)
++
++    execute_rd = RoleDefinition.objects.get(name='JobTemplate Execute')
++    execute_rd.give_permission(team, executable_jt)
++
++    # Reproduce F180's persisted state: the managed role definition is correct
++    # and execute is evaluated, but its implied view evaluation is absent.
++    team_member_role_ids = team_user.role_assignments.values_list('object_role_id', flat=True)
++    RoleEvaluation.objects.filter(
++        role_id__in=team_member_role_ids,
++        codename='view_jobtemplate',
++        object_id=executable_jt.pk,
++    ).delete()
++
++    response = get(reverse('api:job_template_list'), team_user)
++    assert response.status_code == 200
++    result_ids = [result['id'] for result in response.data['results']]
++    assert executable_jt.pk in result_ids
++    assert hidden_jt.pk not in result_ids
++
++
+ @pytest.mark.django_db
+ def test_unified_job_list_rando_sees_nothing(rando, setup_managed_roles, get):
+     """Unprivileged user sees no unified jobs."""
