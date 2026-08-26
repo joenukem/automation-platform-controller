@@ -98,7 +98,9 @@ the console and API, not assumed.
 - **CTL-024 (P0)** — Job templates: surveys (all question types, validation
   enforced server-side at launch), `ask_*` prompt-on-launch fields,
   `extra_vars`, credentials, execution environments, instance/container group
-  pinning, job slicing, forks, verbosity.
+  pinning, job slicing, forks, verbosity. `JobTemplate Execute` is sufficient
+  to list and launch the assigned template without granting change or delete;
+  unrelated templates remain hidden.
 - **CTL-025 (P0)** — Workflow job templates: nodes, success/failure/always
   relations, **approval nodes** with timeout, workflow-level launch.
 - **CTL-026 (P0)** — Execution environments: org-scoped EE records, image
