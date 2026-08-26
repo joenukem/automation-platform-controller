@@ -11,7 +11,7 @@ data:
     \   uwsgi_param HTTP_AUTHORIZATION $http_authorization;\n    uwsgi_pass 127.0.0.1:8050;\n\
     \  }\n}\n"
   gateway_auth.py: "import base64\nimport hashlib\nimport hmac\nimport os\nimport\
-    \ time\n\nfrom django.contrib.auth import get_user_model\nfrom rest_framework\
+    \ time\n\nfrom crum import set_current_user\nfrom django.contrib.auth import get_user_model\nfrom rest_framework\
     \ import authentication\nfrom rest_framework import exceptions\n\nEMPTY_BODY_SHA256\
     \ = \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"\n\n\n\
     class GatewayHeaderAuthentication(authentication.BaseAuthentication):\n    def\
@@ -39,8 +39,8 @@ data:
     \            hmac.new(secret.encode(\"utf-8\"), canonical.encode(\"utf-8\"), hashlib.sha256).digest()\n\
     \        ).decode(\"ascii\")\n        if not hmac.compare_digest(signature, expected):\n\
     \            raise exceptions.AuthenticationFailed(\"gateway signature mismatch\"\
-    )\n\n        user = _sync_user(user_id, username, email, groups)\n        return\
-    \ (user, None)\n\n\ndef _header(request, name):\n    return (request.META.get(name)\
+    )\n\n        user = _sync_user(user_id, username, email, groups)\n        set_current_user(user)\n\
+    \        return (user, None)\n\n\ndef _header(request, name):\n    return (request.META.get(name)\
     \ or \"\").strip()\n\n\ndef _required_header(request, name):\n    value = _header(request,\
     \ name)\n    if not value:\n        raise exceptions.AuthenticationFailed(\"gateway\
     \ trusted-header request is incomplete\")\n    return value\n\n\ndef _groups(value):\n\
@@ -54,11 +54,11 @@ data:
     \ os.environ.get(\"AWX_GATEWAY_ADMIN_GROUPS\", \"admins,system-administrators\"\
     ).split(\",\")\n        if group.strip()\n    }\n    is_admin = bool(admin_groups.intersection(groups))\n\
     \    User = get_user_model()\n    user, _ = User.objects.get_or_create(username=username,\
-    \ defaults={\"email\": email})\n    changed = False\n    if email and user.email\
-    \ != email:\n        user.email = email\n        changed = True\n    if is_admin\
-    \ and (not user.is_staff or not user.is_superuser):\n        user.is_staff = True\n\
-    \        user.is_superuser = True\n        changed = True\n    if changed:\n \
-    \       user.save(update_fields=[\"email\", \"is_staff\", \"is_superuser\"])\n\
+    \ defaults={\"email\": email})\n    updates = {}\n    if email and user.email\
+    \ != email:\n        updates[\"email\"] = email\n    if is_admin and (not user.is_staff\
+    \ or not user.is_superuser):\n        updates[\"is_staff\"] = True\n        updates[\"is_superuser\"]\
+    \ = True\n    if updates:\n        User.objects.filter(pk=user.pk).update(**updates)\n\
+    \        for field, value in updates.items():\n            setattr(user, field, value)\n\
     \    return user\n"
   nginx.conf: "worker_processes auto;\nerror_log /dev/stderr warn;\npid /tmp/nginx.pid;\n\
     \nevents {\n  worker_connections 1024;\n}\n\nhttp {\n  include /etc/nginx/mime.types;\n\
