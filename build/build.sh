@@ -6,12 +6,12 @@
 #
 # Pipeline: clone upstreams at the pinned SHAs -> apply patches/series with
 # git apply -> pin requirements_git.txt to the locked SHAs -> render the
-# headless Dockerfile -> tar context -> buildah on the prod1 image-build
+# headless Dockerfile -> tar context -> buildah on the franken image-build
 # builder pod (dnsPolicy Default — cluster DNS wildcards external names into
 # Traefik; see docs/phase0/REPORT.md) -> push to the franken registry.
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
-export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/labpool-prod1-k3s.yaml}"
+export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"   # franken (image-build ns); override for another cluster
 REG_PUSH="192.168.1.240:30500"
 REG_PULL="franken-registry.example.com:5000"
 IMG="automation-platform/controller"

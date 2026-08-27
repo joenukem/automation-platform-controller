@@ -3,13 +3,13 @@
 #
 #   build/test.sh [tag]     # defaults to work/last-build-tag
 #
-# Runs a pod from the image on prod1 (dnsPolicy Default so pip can fetch
+# Runs a pod from the image on franken (dnsPolicy Default so pip can fetch
 # pytest), installs the test tooling into the image's own venv, and runs the
 # no-database unit subset. The pass/fail counts are the baseline every patch
 # is judged against — a patch that changes them must say why.
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
-export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/labpool-prod1-k3s.yaml}"
+export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"   # franken (image-build ns); override for another cluster
 TAG="${1:-$(cat "$here/work/last-build-tag" 2>/dev/null)}"
 [ -n "$TAG" ] || { echo "no tag; run build/build.sh first" >&2; exit 1; }
 IMG="franken-registry.example.com:5000/automation-platform/controller:$TAG"
