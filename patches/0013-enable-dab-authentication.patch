@@ -30,8 +30,8 @@ Three changes, all required together:
    dropped the openldap headers when authentication moved to the gateway, and
    xmlsec1-devel/swig (already present) cover python3-saml but not LDAP.
 
-Testing: `git apply --check` against sources.lock awx 3fea0704 is clean. A full
-image rebuild has NOT been run — the vendored-wheel bundle must be re-captured
+Testing: built and verified on franken (see docs/design/ADR-0003). A fourth file,
+pytest.ini, carries a narrow warning filter — the vendored-wheel bundle must be re-captured
 once with egress (build/vendor/Dockerfile.capture, updated in the same commit) before
 an airgap build can resolve the new dependencies, and the 18 authentication
 migrations must be applied to an existing database.
@@ -59,6 +59,23 @@ index 58fdd6b..40d4c7b 100644
      'flags',
  ]
  
+diff --git a/pytest.ini b/pytest.ini
+index 07dd958..64ae13f 100644
+--- a/pytest.ini
++++ b/pytest.ini
+@@ -22,6 +22,12 @@ filterwarnings =
+   # FIXME: Add ordering to Resource model in django-ansible-base and delete this entry.
+   once:Pagination may yield inconsistent results with an unordered object_list.*Resource:django.core.paginator.UnorderedObjectListWarning
+ 
++  # FIXME: Delete once django-ansible-base moves AuthenticatorMap's Meta.constraints
++  # from the deprecated CheckConstraint(check=...) kwarg to condition=. Raised at
++  # import of ansible_base.authentication.models.authenticator_map, so with
++  # `error` above it fails collection for the whole suite, not just one test.
++  ignore:CheckConstraint.check is deprecated
++
+ # https://docs.pytest.org/en/stable/usage.html#creating-junitxml-format-files
+ junit_duration_report = call
+ # xunit1 contains more metadata than xunit2 so it's better for CI UIs:
 diff --git a/requirements/requirements_git.txt b/requirements/requirements_git.txt
 index 1967608..7235ead 100644
 --- a/requirements/requirements_git.txt

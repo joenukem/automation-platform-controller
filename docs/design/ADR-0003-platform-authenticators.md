@@ -108,21 +108,65 @@ one in Go.
 
 ## Status of verification
 
-What has been verified:
+Built and verified on **franken** (`image-build` namespace), 2026-08-27, image
+`automation-platform/controller:0.0.2-g632780bc3a`. Two lanes: lane A built the
+image and ran the unit tripwire; lane B proved the dependency set independently
+on the previous image.
 
-- `git apply --check` of the patch against `sources.lock` awx `3fea0704` — clean.
-- The vendored subsystem's completeness, as tabulated above, read from
-  `upstream/django-ansible-base` at the pinned SHA.
-- The automatic settings and URL wiring, read from `settings_logic.py:147` and
-  `dynamic_urls.py`.
+| Check | Result |
+| --- | --- |
+| Patch applies to `sources.lock` awx `3fea0704` | clean, 4 files |
+| Image builds with the added LDAP/SAML build deps | **pass** — pushed `0.0.2-g632780bc3a` |
+| `python-ldap` compiles against `openldap-devel` | **pass** — 3.4.7 in the image venv |
+| All 7 auth deps baked into the image venv | **pass** — 7/7 |
+| Third-party imports (lane B: ldap, django_auth_ldap, onelogin.saml2, xmlsec, lxml, tacacs_plus, pyrad, 4× social_core, social_django, tabulate) | **pass** — 14/14 |
+| `'ansible_base.authentication'` in the shipped settings | **pass** |
+| `awx-manage check` | **pass** — only the pre-existing headless `staticfiles.W004` |
+| `AnsibleBaseAuth` appended to `AUTHENTICATION_BACKENDS` | **pass** |
+| `SocialExceptionHandlerMiddleware` + `AuthenticatorBackendMiddleware` present | **pass** |
+| DAB middleware ordered **before** `django.contrib.auth`'s | **pass** — index 11 vs 12 |
+| DAB `SessionAuthentication` first in DRF `DEFAULT_AUTHENTICATION_CLASSES` | **pass** |
+| Routes mounted | **pass** — `authenticators` (7), `authenticator_maps` (6), `authenticator_plugins`, `trigger_definition`, `ui_auth` |
+| Model drift (`makemigrations --check`) | **pass** — "No changes detected in app 'dab_authentication'" |
+| Unit tripwire vs last good run | **pass** — `13 failed, 1235 passed, 1 xfailed, 116 errors`, identical failure set to `g1cd28c7d49` |
 
-What has **not** been verified, and must be before this is called done:
+### The one real defect this found
 
-- No image has been rebuilt. `build/build.sh` and `build/airgap-build.sh` have not
-  been run with this patch in the series.
-- No migrations have been applied and no `manage.py check` has been run against a
-  build with the app enabled.
-- No authenticator has been created or logged in with. Per the repo's standard,
-  a type is not supported until a real directory or IdP authenticates a real user
-  and the maps materialize the expected privilege — canned fixtures are not
-  evidence.
+The first build (`0.0.2-gcffb0f7384`) **broke the entire unit suite at collection**.
+`pytest.ini` sets `filterwarnings = error`, and DAB's `AuthenticatorMap.Meta`
+builds its two `CheckConstraint`s with the deprecated `check=` kwarg, so importing
+`ansible_base.authentication.models.authenticator_map` raised
+`RemovedInDjango60Warning` — not one failing test, but zero tests collected.
+
+Fixed in the patch by a narrow `ignore:CheckConstraint.check is deprecated` entry,
+following the file's existing precedent for the DAB `UnorderedObjectListWarning`.
+Verified in isolation before rebuilding: the import raises under `-W error` and
+succeeds with the filter. Delete the entry when upstream moves to `condition=`.
+
+### Routes land on `/api/v2/`, not a gateway path
+
+Worth recording because it makes the topology question concrete rather than
+theoretical: with the app enabled here the endpoints are
+`/api/v2/authenticators/`, `/api/v2/authenticator_plugins/`,
+`/api/v2/trigger_definition/`, `/api/v2/ui_auth/` — the controller's own API
+namespace. `docs/api-surface.lock` is unchanged and correctly so: it records
+endpoints a platform consumer actually calls, and nothing calls these yet, so
+`build/verify.sh` is unaffected.
+
+### Migration risk for existing deployments
+
+18 migrations, and they are additive: 3 `CreateModel` for the app's own tables,
+with every `AlterField`/`RemoveField`/`RenameField` being that app's own history
+replayed on a fresh install. The only cross-app dependency is
+`swappable_dependency(AUTH_USER_MODEL)` — foreign keys to the user table. No
+existing AWX table is altered.
+
+### Still outstanding
+
+- Migrations have **not** been applied to a live database — `makemigrations
+  --check` proves the models and migrations agree, not that a migrate run
+  succeeds against an existing schema.
+- **No authenticator has been created and no directory login performed.** Per the
+  repo standard a type is not supported until a real directory or IdP
+  authenticates a real user and the maps materialize the expected privilege.
+  Everything above is build- and boot-level evidence.
