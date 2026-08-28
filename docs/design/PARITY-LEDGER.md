@@ -22,7 +22,7 @@ feature without a ruling is a gap in this document, not silent scope.
 | DAB RBAC: role definitions, user/team role assignments API | IN-1.0 | `role_user_assignments`/`role_team_assignments` used by lab verifies |
 | Legacy `/roles/` compatibility API | FULL (F-RBAC) | older integrations; scoped surface uses DAB endpoints |
 | Object-level granular permissions (all 30+ role types) | FULL (F-RBAC) | 1.0 needs the subset the suite exercises (execute/admin/use/read on templates, inventories, projects, credentials) |
-| Platform authenticators: local, LDAP, SAML, OIDC, Azure AD, TACACS+, RADIUS, GitHub/Google social | GATEWAY | AAP 2.5+ moved authentication to the gateway; `awx-gateway` owns this ledger area |
+| Platform authenticators: local, LDAP, SAML, OIDC, Azure AD, TACACS+, RADIUS, GitHub/Google social | IN-1.0 | Delivered by upstream `ansible_base.authentication`, vendored at the `sources.lock` DAB SHA and **enabled in this build** (ADR-0003, `patches/0013`). 15 plugins, all 5 map types, full trigger grammar, `/authenticator_plugins/` + `/trigger_definition/` + `/ui_auth/`. Previously ruled GATEWAY on the reading that AAP 2.5+ moved auth out of the controller — true of the product topology, but the subsystem itself is DAB either way, and it was shipping in our image as dead code. Image rebuild + 18 migrations + a live directory login still outstanding. |
 | OAuth2 applications + tokens (`/applications/`, `/tokens/`) | IN-1.0 (tokens) / FULL (F-API) (applications) | labs mint personal access tokens; OAuth2 app registration is full-parity |
 | Session limits, login/idle timeouts | GATEWAY | |
 | Service accounts / service tokens (2.7) | FULL (F-RBAC) | gateway-issued; controller must honor |

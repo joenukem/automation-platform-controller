@@ -15,7 +15,7 @@
 # with `buildah bud --network none --pull=never` — no RUN step has any network.
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
-export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/labpool-prod1-k3s.yaml}"
+export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"   # franken (image-build ns); override for another cluster
 REG_PUSH="${REG_PUSH:-192.168.1.240:30500}"
 MIRROR_BASE="${MIRROR_BASE:-$REG_PUSH/mirror}"
 VENDOR_IMAGE="${VENDOR_IMAGE:-$REG_PUSH/automation-platform/vendor-capture:full}"
