@@ -34,5 +34,7 @@ controller records a healthy job as `error` with rc=None:
 
 The patch asks the pod before giving up: while it is Pending or Running there is
 more output coming, so the retry budget is refilled and the stream reconnected.
-A pod in a terminal phase falls through to the original happy path, so the loop
-still terminates.
+The phase lookup uses its own bounded context, because the log-stream failure can
+cancel the work context before receptor asks Kubernetes whether the pod is still
+running. A pod in a terminal phase falls through to the original happy path, so
+the loop still terminates.

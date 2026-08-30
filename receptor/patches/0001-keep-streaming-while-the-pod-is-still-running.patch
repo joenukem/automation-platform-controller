@@ -46,3 +46,73 @@ index f4f0097..501ba07 100644
  				if kw.GetContext().Err() == context.Canceled {
  					kw.GetWorkceptor().nc.GetLogger().Info(
  						"Context was canceled while reading logs for pod %s/%s. Assuming pod has finished",
+diff --git a/pkg/workceptor/kubernetes_stream_test.go b/pkg/workceptor/kubernetes_stream_test.go
+new file mode 100644
+index 0000000..22a64dc
+--- /dev/null
++++ b/pkg/workceptor/kubernetes_stream_test.go
+@@ -0,0 +1,64 @@
++package workceptor
++
++import (
++	"context"
++	"testing"
++
++	corev1 "k8s.io/api/core/v1"
++	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
++	"k8s.io/client-go/kubernetes"
++)
++
++type canceledContextBaseWorkUnit struct {
++	BaseWorkUnitForWorkUnit
++	ctx context.Context
++}
++
++func (b canceledContextBaseWorkUnit) GetContext() context.Context {
++	return b.ctx
++}
++
++type loggingPhaseKubeAPI struct {
++	KubeAPIer
++	t              *testing.T
++	expectedPhase  corev1.PodPhase
++	observedActive bool
++}
++
++func (k *loggingPhaseKubeAPI) Get(
++	ctx context.Context,
++	_ *kubernetes.Clientset,
++	_, _ string,
++	_ metav1.GetOptions,
++) (*corev1.Pod, error) {
++	if ctx.Err() != nil {
++		k.t.Fatalf("pod phase query inherited the canceled work context: %v", ctx.Err())
++	}
++	if _, ok := ctx.Deadline(); !ok {
++		k.t.Fatal("pod phase query has no timeout")
++	}
++	k.observedActive = true
++
++	return &corev1.Pod{Status: corev1.PodStatus{Phase: k.expectedPhase}}, nil
++}
++
++func TestPodPhaseForLoggingUsesIndependentContext(t *testing.T) {
++	previousAPI := KubeAPIWrapperInstance
++	t.Cleanup(func() {
++		KubeAPIWrapperInstance = previousAPI
++	})
++
++	workContext, cancelWork := context.WithCancel(context.Background())
++	cancelWork()
++	base := canceledContextBaseWorkUnit{ctx: workContext}
++	kw := &KubeUnit{BaseWorkUnitForWorkUnit: base}
++	fakeAPI := &loggingPhaseKubeAPI{t: t, expectedPhase: corev1.PodRunning}
++	KubeAPIWrapperInstance = fakeAPI
++
++	if phase := kw.podPhaseForLogging("jobs", "automation-job-15462"); phase != corev1.PodRunning {
++		t.Fatalf("podPhaseForLogging() = %q, want %q", phase, corev1.PodRunning)
++	}
++	if !fakeAPI.observedActive {
++		t.Fatal("pod phase query was not made")
++	}
++}
