@@ -14,6 +14,10 @@ Patch `0013` is the one queue entry that is not a code fix: it *enables* an
 upstream subsystem (`ansible_base.authentication`) that was vendored but absent
 from `INSTALLED_APPS`. See `docs/design/ADR-0003-platform-authenticators.md`.
 
+Patch `0015` prevents cleanup load from consuming the dispatch worker pool: an
+organization deletion persists its cancellation state and yields immediately,
+then the database-backed pump retries it instead of sleeping in a worker.
+
 The queue starting EMPTY is the Phase-1 result: zero code divergence was
 needed to reach compatibility. The first series lands ADR-0001 increment 1
 (the organization deletion state machine).

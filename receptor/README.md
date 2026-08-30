@@ -41,3 +41,8 @@ the loop still terminates. If the Pod is still active after cancellation, the
 following Pod read and log-stream reopen also use bounded independent recovery
 contexts; otherwise they immediately fail through the canceled client rate
 limiter. The reopened stream owns that recovery context and cancels it on close.
+
+The control-side result reader also treats a briefly missing stdout path as a
+recoverable work-unit transition instead of aborting after three seconds. It
+keeps the current descriptor until recovery recreates the path, then adopts the
+replacement inode at the last delivered byte offset so events are not replayed.

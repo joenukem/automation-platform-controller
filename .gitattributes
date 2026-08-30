@@ -1,0 +1,4 @@
+# Stored patches intentionally contain nested diff context whose leading patch
+# marker can look like a space-before-tab or trailing-space error to the outer
+# repository diff. Validate their payload with `git apply --check` instead.
+receptor/patches/0001-keep-streaming-while-the-pod-is-still-running.patch -whitespace

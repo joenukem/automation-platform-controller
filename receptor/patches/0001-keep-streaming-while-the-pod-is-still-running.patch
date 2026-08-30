@@ -230,3 +230,184 @@ index 0000000..eece5df
 +		t.Fatalf("stream context error = %v, want %v", streamContext.Err(), context.Canceled)
 +	}
 +}
+diff --git a/pkg/workceptor/workceptor.go b/pkg/workceptor/workceptor.go
+index 80042db..cd487d6 100644
+--- a/pkg/workceptor/workceptor.go
++++ b/pkg/workceptor/workceptor.go
+@@ -475,6 +475,34 @@ func sleepOrDone(doneChan <-chan struct{}, interval time.Duration) bool {
+ 	}
+ }
+ 
++// reopenStdoutIfReplaced preserves a live results stream across work-unit
++// recovery. Recovery can briefly remove and recreate the stdout path while a
++// reader still owns the old inode. A missing path is transient; once a new
++// inode appears, return a handle for it so the caller can continue at the same
++// byte offset without replaying events.
++func reopenStdoutIfReplaced(stdout *os.File, stdoutFilename string) (*os.File, bool, error) {
++	currentInfo, err := stdout.Stat()
++	if err != nil {
++		return stdout, false, err
++	}
++	pathInfo, err := os.Stat(stdoutFilename)
++	if os.IsNotExist(err) {
++		return stdout, false, nil
++	}
++	if err != nil {
++		return stdout, false, err
++	}
++	if os.SameFile(currentInfo, pathInfo) {
++		return stdout, false, nil
++	}
++	replacement, err := os.Open(stdoutFilename)
++	if err != nil {
++		return stdout, false, err
++	}
++
++	return replacement, true, nil
++}
++
+ // GetResults returns a live stream of the results of a unit.
+ func (w *Workceptor) GetResults(ctx context.Context, unitID string, startPos int64) (chan []byte, error) {
+ 	unit, err := w.findUnit(unitID)
+@@ -491,7 +519,6 @@ func (w *Workceptor) GetResults(ctx context.Context, unitID string, startPos int
+ 	unitdir := path.Join(w.dataDir, unitID)
+ 	stdoutFilename := path.Join(unitdir, "stdout")
+ 	var stdout *os.File
+-	ctxChild, cancel := context.WithCancel(ctx)
+ 	go func() {
+ 		defer func() {
+ 			err = stdout.Close()
+@@ -499,7 +526,6 @@ func (w *Workceptor) GetResults(ctx context.Context, unitID string, startPos int
+ 				w.nc.GetLogger().Error("Error closing stdout %s", stdoutFilename)
+ 			}
+ 			resultClose()
+-			cancel()
+ 		}()
+ 
+ 		// Wait for stdout file to exist
+@@ -527,29 +553,6 @@ func (w *Workceptor) GetResults(ctx context.Context, unitID string, startPos int
+ 			break
+ 		}
+ 		filePos := startPos
+-		statChan := make(chan struct{}, 1)
+-		go func() {
+-			failures := 0
+-			for {
+-				select {
+-				case <-ctxChild.Done():
+-					return
+-				case <-time.After(1 * time.Second):
+-					_, err := os.Stat(stdoutFilename)
+-					if os.IsNotExist(err) {
+-						failures++
+-						if failures > 3 {
+-							w.nc.GetLogger().Error("Exceeded retries for reading stdout %s", stdoutFilename)
+-							statChan <- struct{}{}
+-
+-							return
+-						}
+-					} else {
+-						failures = 0
+-					}
+-				}
+-			}
+-		}()
+ 		for {
+ 			if sleepOrDone(ctx.Done(), 250*time.Millisecond) {
+ 				return
+@@ -558,8 +561,6 @@ func (w *Workceptor) GetResults(ctx context.Context, unitID string, startPos int
+ 				select {
+ 				case <-ctx.Done():
+ 					return
+-				case <-statChan:
+-					return
+ 				default:
+ 					var newPos int64
+ 					newPos, err = stdout.Seek(filePos, 0)
+@@ -596,6 +597,16 @@ func (w *Workceptor) GetResults(ctx context.Context, unitID string, startPos int
+ 
+ 					return
+ 				}
++				replacement, replaced, reopenErr := reopenStdoutIfReplaced(stdout, stdoutFilename)
++				if reopenErr != nil {
++					w.nc.GetLogger().Warning("Could not inspect replacement stdout %s: %s", stdoutFilename, reopenErr)
++				} else if replaced {
++					if closeErr := stdout.Close(); closeErr != nil {
++						w.nc.GetLogger().Warning("Error closing replaced stdout %s: %s", stdoutFilename, closeErr)
++					}
++					stdout = replacement
++					w.nc.GetLogger().Info("Reopened replaced stdout %s at offset %d", stdoutFilename, filePos)
++				}
+ 			} else if err != nil {
+ 				w.nc.GetLogger().Error("Error reading stdout: %s\n", err)
+ 
+diff --git a/pkg/workceptor/workceptor_stdout_test.go b/pkg/workceptor/workceptor_stdout_test.go
+new file mode 100644
+index 0000000..3f2fec5
+--- /dev/null
++++ b/pkg/workceptor/workceptor_stdout_test.go
+@@ -0,0 +1,64 @@
++package workceptor
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++)
++
++func TestReopenStdoutIfReplacedWaitsWhilePathMissing(t *testing.T) {
++	stdoutFilename := filepath.Join(t.TempDir(), "stdout")
++	if err := os.WriteFile(stdoutFilename, []byte("first"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	stdout, err := os.Open(stdoutFilename)
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = stdout.Close() })
++	if err := os.Remove(stdoutFilename); err != nil {
++		t.Fatal(err)
++	}
++
++	resolved, replaced, err := reopenStdoutIfReplaced(stdout, stdoutFilename)
++	if err != nil {
++		t.Fatalf("reopenStdoutIfReplaced() error = %v", err)
++	}
++	if replaced || resolved != stdout {
++		t.Fatal("missing path must retain the active stdout descriptor")
++	}
++}
++
++func TestReopenStdoutIfReplacedAdoptsRecreatedPath(t *testing.T) {
++	stdoutFilename := filepath.Join(t.TempDir(), "stdout")
++	if err := os.WriteFile(stdoutFilename, []byte("first"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	stdout, err := os.Open(stdoutFilename)
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = stdout.Close() })
++	if err := os.Remove(stdoutFilename); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(stdoutFilename, []byte("replacement"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++
++	resolved, replaced, err := reopenStdoutIfReplaced(stdout, stdoutFilename)
++	if err != nil {
++		t.Fatalf("reopenStdoutIfReplaced() error = %v", err)
++	}
++	if !replaced || resolved == stdout {
++		t.Fatal("recreated path must replace the stale stdout descriptor")
++	}
++	t.Cleanup(func() { _ = resolved.Close() })
++	payload, err := os.ReadFile(stdoutFilename)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if string(payload) != "replacement" {
++		t.Fatalf("replacement payload = %q", payload)
++	}
++}

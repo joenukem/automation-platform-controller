@@ -1,0 +1,160 @@
+From: Automation Platform controller <controller@pipefail.dev>
+Subject: [PATCH 0015] yield dispatch workers while organization jobs cancel
+
+Fixes F309. The resumable organization-deletion reaper held one dispatcherd
+worker for up to 300 seconds while polling canceled jobs. Cleanup bursts could
+therefore consume every worker, leaving project updates and learner jobs queued
+until their clients timed out.
+
+Cancellation is still requested idempotently, but an active job now causes the
+reaper to persist progress and return its worker immediately. The existing
+database-backed 20-second pump re-admits cancelling rows, so the wait remains
+durable across task-process restarts without occupying task capacity.
+
+Tested by: awx/main/tests/unit/test_org_deletion.py and the controller patch
+apply/syntax tripwire. Deployed concurrency proof remains required.
+
+diff --git a/awx/main/tasks/org_deletion.py b/awx/main/tasks/org_deletion.py
+index adf9b7c..a7975bd 100644
+--- a/awx/main/tasks/org_deletion.py
++++ b/awx/main/tasks/org_deletion.py
+@@ -7,7 +7,6 @@
+ # this replaces).
+ 
+ import logging
+-import time
+ 
+ from dispatcherd.publish import task
+ 
+@@ -16,8 +15,7 @@ from awx.main.dispatch import get_task_queuename
+ 
+ logger = logging.getLogger('awx.main.tasks.org_deletion')
+ 
+-CANCEL_WAIT_SECONDS = 300
+-CANCEL_POLL_SECONDS = 5
++CANCEL_RETRY_SECONDS = 20
+ 
+ 
+ def _active_jobs_for(org):
+@@ -110,9 +108,13 @@ def process_organization_deletions():
+             strays.update(organization=graveyard)
+ 
+     stale = now - timedelta(seconds=STUCK_AFTER_SECONDS)
++    cancellation_retry = now - timedelta(seconds=CANCEL_RETRY_SECONDS)
+     ready = OrganizationDeletion.objects.filter(state=OrganizationDeletion.STATE_PENDING)
++    waiting_for_cancellation = OrganizationDeletion.objects.filter(
++        state=OrganizationDeletion.STATE_CANCELLING_JOBS, modified__lt=cancellation_retry
++    )
+     stuck = OrganizationDeletion.objects.filter(
+-        state__in=(OrganizationDeletion.STATE_CANCELLING_JOBS, OrganizationDeletion.STATE_REAPING), modified__lt=stale
++        state=OrganizationDeletion.STATE_REAPING, modified__lt=stale
+     )
+     # A failed deletion must not strand: an explicit DELETE that failed (e.g. a
+     # job that would not cancel in the window) has no caller re-issuing it, and
+@@ -124,7 +126,7 @@ def process_organization_deletions():
+     failed = OrganizationDeletion.objects.filter(
+         state=OrganizationDeletion.STATE_FAILED, modified__lt=stale
+     )
+-    for deletion in list(ready) + list(stuck) + list(failed):
++    for deletion in list(ready) + list(waiting_for_cancellation) + list(stuck) + list(failed):
+         logger.info('dispatching reaper for organization deletion %s (state=%s)', deletion.pk, deletion.state)
+         reap_organization.apply_async([deletion.pk], queue=get_task_queuename())
+ 
+@@ -152,7 +154,10 @@ def reap_organization(deletion_id):
+ 
+     progress = dict(deletion.progress or {})
+     try:
+-        # Phase 1 — cancel active jobs, then wait (bounded) for them to settle.
++        # Phase 1 — request cancellation, persist progress, and yield this
++        # dispatcherd worker while the jobs settle. The 20-second database pump
++        # re-enters this state durably; sleeping here once consumed every worker
++        # during cleanup bursts and starved ordinary jobs/project updates.
+         if deletion.state == OrganizationDeletion.STATE_PENDING:
+             deletion.transition(OrganizationDeletion.STATE_CANCELLING_JOBS)
+         if deletion.state == OrganizationDeletion.STATE_CANCELLING_JOBS:
+@@ -163,13 +168,16 @@ def reap_organization(deletion_id):
+                     cancelled += 1
+                 except Exception:
+                     logger.exception('cancel of job %s during org deletion %s', uj.pk, deletion_id)
+-            progress['jobs_cancelled'] = progress.get('jobs_cancelled', 0) + cancelled
+-            deadline = time.monotonic() + CANCEL_WAIT_SECONDS
+-            while _active_jobs_for(org).exists():
+-                if time.monotonic() > deadline:
+-                    raise RuntimeError(f'jobs still active after {CANCEL_WAIT_SECONDS}s of cancellation; re-issue the DELETE to resume')
+-                time.sleep(CANCEL_POLL_SECONDS)
++            # Cancellation is intentionally retried after a crash or a slow
++            # status transition; keep this as a count, not an attempt counter.
++            progress['jobs_cancelled'] = max(progress.get('jobs_cancelled', 0), cancelled)
+             deletion.progress = progress
++            if _active_jobs_for(org).exists():
++                deletion.save(update_fields=['progress', 'modified'])
++                logger.info(
++                    'organization deletion %s is waiting for active jobs; yielding worker until the next pump', deletion_id
++                )
++                return
+             deletion.transition(OrganizationDeletion.STATE_REAPING)
+ 
+         # Phase 2 — delete children in dependency order, then the organization.
+diff --git a/awx/main/tests/unit/test_org_deletion.py b/awx/main/tests/unit/test_org_deletion.py
+index a6bedef..d834ffc 100644
+--- a/awx/main/tests/unit/test_org_deletion.py
++++ b/awx/main/tests/unit/test_org_deletion.py
+@@ -8,6 +8,7 @@ provider-conformance leak scan, which is the acceptance test the ADR names.
+ import pytest
+ 
+ from awx.main.models.org_deletion import OrganizationDeletion, child_deletion_plan
++from awx.main.tasks import org_deletion
+ 
+ 
+ def _unsaved(state):
+@@ -80,3 +81,50 @@ def test_reaper_resumes_from_failed_state():
+     # and from pending it can proceed
+     d.transition(OrganizationDeletion.STATE_CANCELLING_JOBS)
+     assert d.state == OrganizationDeletion.STATE_CANCELLING_JOBS
++
++
++def test_reaper_yields_worker_while_job_cancellation_settles(monkeypatch):
++    class ActiveJob:
++        pk = 7
++        cancel_count = 0
++
++        def cancel(self):
++            self.cancel_count += 1
++
++    class ActiveJobs:
++        def __init__(self, job):
++            self.job = job
++
++        def __iter__(self):
++            return iter([self.job])
++
++        def exists(self):
++            return True
++
++    class Deletion:
++        pk = 3
++        state = OrganizationDeletion.STATE_CANCELLING_JOBS
++        organization = object()
++        progress = {}
++        saved_fields = None
++
++        def save(self, update_fields):
++            self.saved_fields = update_fields
++
++    deletion = Deletion()
++    job = ActiveJob()
++    active = ActiveJobs(job)
++
++    class FailIfWorkerSleeps:
++        monotonic = staticmethod(lambda: 0)
++        sleep = staticmethod(lambda seconds: pytest.fail('reaper held a dispatcherd worker'))
++
++    monkeypatch.setattr(OrganizationDeletion.objects, 'get', lambda pk: deletion)
++    monkeypatch.setattr(org_deletion, '_active_jobs_for', lambda org: active)
++    monkeypatch.setattr(org_deletion, 'time', FailIfWorkerSleeps, raising=False)
++
++    org_deletion.reap_organization(deletion.pk)
++
++    assert job.cancel_count == 1
++    assert deletion.state == OrganizationDeletion.STATE_CANCELLING_JOBS
++    assert deletion.saved_fields == ['progress', 'modified']
