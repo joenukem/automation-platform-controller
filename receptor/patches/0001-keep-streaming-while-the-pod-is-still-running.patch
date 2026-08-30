@@ -1,240 +1,22 @@
-diff --git a/pkg/workceptor/kubernetes.go b/pkg/workceptor/kubernetes.go
-index f4f0097..c32ab35 100644
---- a/pkg/workceptor/kubernetes.go
-+++ b/pkg/workceptor/kubernetes.go
-@@ -245,10 +245,13 @@ func (kw *KubeUnit) kubeLoggingConnectionHandler(timestamps bool, sinceTime time
- 	logReq := KubeAPIWrapperInstance.GetLogs(kw.clientset, podNamespace, podName, podOptions)
- 	// get logstream, with retry
- 	for retries := 5; retries > 0; retries-- {
--		logStream, err = logReq.Stream(kw.GetContext())
-+		streamContext, cancelStream := kw.loggingContext(30 * time.Second)
-+		logStream, err = logReq.Stream(streamContext)
- 		if err == nil {
-+			logStream = &loggingReadCloser{ReadCloser: logStream, cancel: cancelStream}
- 			break
- 		}
-+		cancelStream()
- 		kw.GetWorkceptor().nc.GetLogger().Warning(
- 			"Error opening log stream for pod %s/%s. Will retry %d more times. Error: %s",
- 			podNamespace,
-@@ -269,6 +272,17 @@ func (kw *KubeUnit) kubeLoggingConnectionHandler(timestamps bool, sinceTime time
- 	return logStream, nil
- }
- 
-+type loggingReadCloser struct {
-+	io.ReadCloser
-+	cancel context.CancelFunc
-+}
-+
-+func (stream *loggingReadCloser) Close() error {
-+	stream.cancel()
-+
-+	return stream.ReadCloser.Close()
-+}
-+
- func (kw *KubeUnit) kubeLoggingNoReconnect(streamWait *sync.WaitGroup, stdout *STDoutWriter, stdoutErr *error) {
- 	// Legacy method, for use on k8s < v1.23.14
- 	// uses io.Copy to stream data from pod to stdout file
-@@ -293,6 +307,37 @@ func (kw *KubeUnit) kubeLoggingNoReconnect(streamWait *sync.WaitGroup, stdout *S
- 	}
- }
- 
-+// loggingContext keeps normal stream cancellation tied to the work unit. If that
-+// context is already canceled during recovery, it returns a bounded independent
-+// context so the status read or reconnect can still reach Kubernetes.
-+func (kw *KubeUnit) loggingContext(recoveryTimeout time.Duration) (context.Context, context.CancelFunc) {
-+	workContext := kw.GetContext()
-+	if workContext != nil && workContext.Err() == nil {
-+		return context.WithCancel(workContext)
-+	}
-+
-+	return context.WithTimeout(context.Background(), recoveryTimeout)
-+}
-+
-+func (kw *KubeUnit) podForLogging(podNamespace, podName string) (*corev1.Pod, error) {
-+	ctx, cancel := kw.loggingContext(2 * time.Second)
-+	defer cancel()
-+
-+	return KubeAPIWrapperInstance.Get(ctx, kw.clientset, podNamespace, podName, metav1.GetOptions{})
-+}
-+
-+// podPhaseForLogging reports the pod's current phase, or an empty phase when it
-+// cannot be read. It distinguishes "the pod finished, stop streaming" from "the
-+// log stream broke while the pod is still producing output, keep reconnecting".
-+func (kw *KubeUnit) podPhaseForLogging(podNamespace, podName string) corev1.PodPhase {
-+	pod, err := kw.podForLogging(podNamespace, podName)
-+	if err != nil || pod == nil {
-+		return ""
-+	}
-+
-+	return pod.Status.Phase
-+}
-+
- func (kw *KubeUnit) kubeLoggingWithReconnect(streamWait *sync.WaitGroup, stdout *STDoutWriter, stdinErr *error, stdoutErr *error) {
- 	// preferred method for k8s >= 1.23.14
- 	defer streamWait.Done()
-@@ -313,7 +358,7 @@ func (kw *KubeUnit) kubeLoggingWithReconnect(streamWait *sync.WaitGroup, stdout
- 
- 		// get pod, with retry
- 		for retries := 5; retries > 0; retries-- {
--			kw.pod, err = KubeAPIWrapperInstance.Get(kw.GetContext(), kw.clientset, podNamespace, podName, metav1.GetOptions{})
-+			kw.pod, err = kw.podForLogging(podNamespace, podName)
- 			if err == nil {
- 				break
- 			}
-@@ -346,6 +391,22 @@ func (kw *KubeUnit) kubeLoggingWithReconnect(streamWait *sync.WaitGroup, stdout
- 		for *stdinErr == nil { // check between every line read to see if we need to stop reading
- 			line, err := streamReader.ReadString('\n')
- 			if err != nil {
-+				// A canceled stream does not prove the worker pod finished. Check its
-+				// phase with an independent short-lived context before treating the
-+				// cancellation as terminal.
-+				if phase := kw.podPhaseForLogging(podNamespace, podName); phase == corev1.PodPending || phase == corev1.PodRunning {
-+					kw.GetWorkceptor().nc.GetLogger().Info(
-+						"Log stream for pod %s/%s ended while the pod is still %s; reconnecting instead of closing its stdout.",
-+						podNamespace,
-+						podName,
-+						phase,
-+					)
-+					remainingRetries = retries
-+					time.Sleep(time.Second)
-+
-+					break
-+				}
-+
- 				if kw.GetContext().Err() == context.Canceled {
- 					kw.GetWorkceptor().nc.GetLogger().Info(
- 						"Context was canceled while reading logs for pod %s/%s. Assuming pod has finished",
-diff --git a/pkg/workceptor/kubernetes_stream_test.go b/pkg/workceptor/kubernetes_stream_test.go
-new file mode 100644
-index 0000000..eece5df
---- /dev/null
-+++ b/pkg/workceptor/kubernetes_stream_test.go
-@@ -0,0 +1,119 @@
-+package workceptor
-+
-+import (
-+	"context"
-+	"io"
-+	"strings"
-+	"testing"
-+	"time"
-+
-+	corev1 "k8s.io/api/core/v1"
-+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-+	"k8s.io/client-go/kubernetes"
-+)
-+
-+type canceledContextBaseWorkUnit struct {
-+	BaseWorkUnitForWorkUnit
-+	ctx context.Context
-+}
-+
-+func (b canceledContextBaseWorkUnit) GetContext() context.Context {
-+	return b.ctx
-+}
-+
-+type loggingPhaseKubeAPI struct {
-+	KubeAPIer
-+	t              *testing.T
-+	expectedPhase  corev1.PodPhase
-+	observedActive bool
-+}
-+
-+func (k *loggingPhaseKubeAPI) Get(
-+	ctx context.Context,
-+	_ *kubernetes.Clientset,
-+	_, _ string,
-+	_ metav1.GetOptions,
-+) (*corev1.Pod, error) {
-+	if ctx.Err() != nil {
-+		k.t.Fatalf("pod phase query inherited the canceled work context: %v", ctx.Err())
-+	}
-+	if _, ok := ctx.Deadline(); !ok {
-+		k.t.Fatal("pod phase query has no timeout")
-+	}
-+	k.observedActive = true
-+
-+	return &corev1.Pod{Status: corev1.PodStatus{Phase: k.expectedPhase}}, nil
-+}
-+
-+func TestPodPhaseForLoggingUsesIndependentContext(t *testing.T) {
-+	previousAPI := KubeAPIWrapperInstance
-+	t.Cleanup(func() {
-+		KubeAPIWrapperInstance = previousAPI
-+	})
-+
-+	workContext, cancelWork := context.WithCancel(context.Background())
-+	cancelWork()
-+	base := canceledContextBaseWorkUnit{ctx: workContext}
-+	kw := &KubeUnit{BaseWorkUnitForWorkUnit: base}
-+	fakeAPI := &loggingPhaseKubeAPI{t: t, expectedPhase: corev1.PodRunning}
-+	KubeAPIWrapperInstance = fakeAPI
-+
-+	if phase := kw.podPhaseForLogging("jobs", "automation-job-15462"); phase != corev1.PodRunning {
-+		t.Fatalf("podPhaseForLogging() = %q, want %q", phase, corev1.PodRunning)
-+	}
-+	if !fakeAPI.observedActive {
-+		t.Fatal("pod phase query was not made")
-+	}
-+}
-+
-+func TestLoggingContextPreservesActiveWorkCancellation(t *testing.T) {
-+	workContext, cancelWork := context.WithCancel(context.Background())
-+	base := canceledContextBaseWorkUnit{ctx: workContext}
-+	kw := &KubeUnit{BaseWorkUnitForWorkUnit: base}
-+
-+	loggingContext, cancelLogging := kw.loggingContext(time.Minute)
-+	t.Cleanup(cancelLogging)
-+	if loggingContext.Err() != nil {
-+		t.Fatalf("logging context started canceled: %v", loggingContext.Err())
-+	}
-+	cancelWork()
-+	if loggingContext.Err() != context.Canceled {
-+		t.Fatalf("logging context error = %v, want %v", loggingContext.Err(), context.Canceled)
-+	}
-+}
-+
-+func TestLoggingContextDetachesCanceledWorkWithDeadline(t *testing.T) {
-+	workContext, cancelWork := context.WithCancel(context.Background())
-+	cancelWork()
-+	base := canceledContextBaseWorkUnit{ctx: workContext}
-+	kw := &KubeUnit{BaseWorkUnitForWorkUnit: base}
-+
-+	loggingContext, cancelLogging := kw.loggingContext(time.Minute)
-+	t.Cleanup(cancelLogging)
-+	if loggingContext.Err() != nil {
-+		t.Fatalf("recovery context inherited cancellation: %v", loggingContext.Err())
-+	}
-+	deadline, ok := loggingContext.Deadline()
-+	if !ok {
-+		t.Fatal("recovery context has no deadline")
-+	}
-+	remaining := time.Until(deadline)
-+	if remaining <= 0 || remaining > time.Minute {
-+		t.Fatalf("recovery deadline remaining = %s, want within one minute", remaining)
-+	}
-+}
-+
-+func TestLoggingReadCloserCancelsOwnedContext(t *testing.T) {
-+	streamContext, cancelStream := context.WithCancel(context.Background())
-+	stream := &loggingReadCloser{
-+		ReadCloser: io.NopCloser(strings.NewReader("")),
-+		cancel:     cancelStream,
-+	}
-+
-+	if err := stream.Close(); err != nil {
-+		t.Fatalf("Close() error = %v", err)
-+	}
-+	if streamContext.Err() != context.Canceled {
-+		t.Fatalf("stream context error = %v, want %v", streamContext.Err(), context.Canceled)
-+	}
-+}
+From: Automation Platform controller <controller@pipefail.dev>
+Subject: [PATCH] retain stdout results across work-unit recovery
+
+Fixes F306 on Receptor 1.6.7. A work-unit recovery can briefly remove and
+recreate its stdout path while GetResults still owns the old inode. The fixed
+three-second path watchdog treated that transition as fatal even while the
+work unit remained active.
+
+Keep the live descriptor while the path is absent. When recovery recreates the
+path with a new inode, adopt it at the last delivered byte offset so events are
+not replayed. Receptor 1.6.7 already contains the Kubernetes log reconnection
+improvements that the earlier 1.4.8 patch carried, so this patch intentionally
+contains only the remaining control-side result-reader fix.
+
 diff --git a/pkg/workceptor/workceptor.go b/pkg/workceptor/workceptor.go
-index 80042db..cd487d6 100644
+index 0614027..8d721b1 100644
 --- a/pkg/workceptor/workceptor.go
 +++ b/pkg/workceptor/workceptor.go
-@@ -475,6 +475,34 @@ func sleepOrDone(doneChan <-chan struct{}, interval time.Duration) bool {
+@@ -492,6 +492,34 @@ func sleepOrDone(doneChan <-chan struct{}, interval time.Duration) bool {
  	}
  }
  
@@ -269,7 +51,7 @@ index 80042db..cd487d6 100644
  // GetResults returns a live stream of the results of a unit.
  func (w *Workceptor) GetResults(ctx context.Context, unitID string, startPos int64) (chan []byte, error) {
  	unit, err := w.findUnit(unitID)
-@@ -491,7 +519,6 @@ func (w *Workceptor) GetResults(ctx context.Context, unitID string, startPos int
+@@ -508,7 +536,6 @@ func (w *Workceptor) GetResults(ctx context.Context, unitID string, startPos int
  	unitdir := path.Join(w.dataDir, unitID)
  	stdoutFilename := path.Join(unitdir, "stdout")
  	var stdout *os.File
@@ -277,7 +59,7 @@ index 80042db..cd487d6 100644
  	go func() {
  		defer func() {
  			err = stdout.Close()
-@@ -499,7 +526,6 @@ func (w *Workceptor) GetResults(ctx context.Context, unitID string, startPos int
+@@ -516,7 +543,6 @@ func (w *Workceptor) GetResults(ctx context.Context, unitID string, startPos int
  				w.nc.GetLogger().Error("Error closing stdout %s", stdoutFilename)
  			}
  			resultClose()
@@ -285,7 +67,7 @@ index 80042db..cd487d6 100644
  		}()
  
  		// Wait for stdout file to exist
-@@ -527,29 +553,6 @@ func (w *Workceptor) GetResults(ctx context.Context, unitID string, startPos int
+@@ -544,29 +570,6 @@ func (w *Workceptor) GetResults(ctx context.Context, unitID string, startPos int
  			break
  		}
  		filePos := startPos
@@ -315,7 +97,7 @@ index 80042db..cd487d6 100644
  		for {
  			if sleepOrDone(ctx.Done(), 250*time.Millisecond) {
  				return
-@@ -558,8 +561,6 @@ func (w *Workceptor) GetResults(ctx context.Context, unitID string, startPos int
+@@ -575,8 +578,6 @@ func (w *Workceptor) GetResults(ctx context.Context, unitID string, startPos int
  				select {
  				case <-ctx.Done():
  					return
@@ -324,7 +106,7 @@ index 80042db..cd487d6 100644
  				default:
  					var newPos int64
  					newPos, err = stdout.Seek(filePos, 0)
-@@ -596,6 +597,16 @@ func (w *Workceptor) GetResults(ctx context.Context, unitID string, startPos int
+@@ -613,6 +614,16 @@ func (w *Workceptor) GetResults(ctx context.Context, unitID string, startPos int
  
  					return
  				}

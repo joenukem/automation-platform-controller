@@ -5,44 +5,23 @@ sidecar — not the controller — owns the Kubernetes log stream of every ephem
 `automation-job-<id>-*` pod, and it is where platform defect **F30** actually
 lives (see `lab-content/docs/AAP-PLATFORM-DEFECTS.md`).
 
-Upstream: https://github.com/ansible/receptor at tag **v1.4.8** (the version
-shipped in `ansible/awx-ee:24.6.1`, reported as `1.4.8+d7fe592`).
+Upstream: https://github.com/ansible/receptor at tag **v1.6.7**, the Receptor
+version shipped with the AAP 2.7-6 product release.
 
 `patches/` holds our fixes as unified diffs against that tag, applied in filename
 order by `build/build-receptor.sh`, which produces
 
-    <registry>/automation-platform/receptor-ee:24.6.1-<suffix>
+    <registry>/automation-platform/receptor-ee:1.6.7-<suffix>
 
 an image identical to `awx-ee:24.6.1` except for `/usr/bin/receptor`. It is used
 ONLY as the `receptor` container of `awx-controller-task`; the execution
 environment used by job pods is untouched.
 
-## 0001 — keep streaming while the pod is still running
+## 0001 — retain stdout results across work-unit recovery
 
-`kubeLoggingWithReconnect` gives a log stream five retries. Every retry is spent
-on a benign reconnect: the API server closes an idle `follow` stream, and the
-reconnect re-requests logs `SinceTime` — which has one-second granularity, so it
-replays lines already emitted. Those replayed lines are filtered out, and only a
-*newer* line resets the budget. A job that goes quiet for a second (any ansible
-task that takes a moment) therefore burns all five retries in about a second, and
-receptor closes the job's stdout underneath a **Running** pod. ansible-runner's
-Processor reads the resulting zero-length line, treats it as fatal, and the
-controller records a healthy job as `error` with rc=None:
-
-    Unexpected empty line encountered during worker stream.
-    Worker did not produce events or streaming was aborted, check execution node health.
-
-The patch asks the pod before giving up: while it is Pending or Running there is
-more output coming, so the retry budget is refilled and the stream reconnected.
-The phase lookup uses its own bounded context, because the log-stream failure can
-cancel the work context before receptor asks Kubernetes whether the pod is still
-running. A pod in a terminal phase falls through to the original happy path, so
-the loop still terminates. If the Pod is still active after cancellation, the
-following Pod read and log-stream reopen also use bounded independent recovery
-contexts; otherwise they immediately fail through the canceled client rate
-limiter. The reopened stream owns that recovery context and cancels it on close.
-
-The control-side result reader also treats a briefly missing stdout path as a
+Receptor 1.6.7 supersedes the earlier local Kubernetes log reconnect patch with
+its upstream reconnect implementation and updated client limits. The remaining
+control-side result reader fix treats a briefly missing stdout path as a
 recoverable work-unit transition instead of aborting after three seconds. It
 keeps the current descriptor until recovery recreates the path, then adopts the
 replacement inode at the last delivered byte offset so events are not replayed.
