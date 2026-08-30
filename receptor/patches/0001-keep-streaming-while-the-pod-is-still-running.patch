@@ -1,18 +1,68 @@
 diff --git a/pkg/workceptor/kubernetes.go b/pkg/workceptor/kubernetes.go
-index f4f0097..501ba07 100644
+index f4f0097..c32ab35 100644
 --- a/pkg/workceptor/kubernetes.go
 +++ b/pkg/workceptor/kubernetes.go
-@@ -293,6 +293,20 @@ func (kw *KubeUnit) kubeLoggingNoReconnect(streamWait *sync.WaitGroup, stdout *S
+@@ -245,10 +245,13 @@ func (kw *KubeUnit) kubeLoggingConnectionHandler(timestamps bool, sinceTime time
+ 	logReq := KubeAPIWrapperInstance.GetLogs(kw.clientset, podNamespace, podName, podOptions)
+ 	// get logstream, with retry
+ 	for retries := 5; retries > 0; retries-- {
+-		logStream, err = logReq.Stream(kw.GetContext())
++		streamContext, cancelStream := kw.loggingContext(30 * time.Second)
++		logStream, err = logReq.Stream(streamContext)
+ 		if err == nil {
++			logStream = &loggingReadCloser{ReadCloser: logStream, cancel: cancelStream}
+ 			break
+ 		}
++		cancelStream()
+ 		kw.GetWorkceptor().nc.GetLogger().Warning(
+ 			"Error opening log stream for pod %s/%s. Will retry %d more times. Error: %s",
+ 			podNamespace,
+@@ -269,6 +272,17 @@ func (kw *KubeUnit) kubeLoggingConnectionHandler(timestamps bool, sinceTime time
+ 	return logStream, nil
+ }
+ 
++type loggingReadCloser struct {
++	io.ReadCloser
++	cancel context.CancelFunc
++}
++
++func (stream *loggingReadCloser) Close() error {
++	stream.cancel()
++
++	return stream.ReadCloser.Close()
++}
++
+ func (kw *KubeUnit) kubeLoggingNoReconnect(streamWait *sync.WaitGroup, stdout *STDoutWriter, stdoutErr *error) {
+ 	// Legacy method, for use on k8s < v1.23.14
+ 	// uses io.Copy to stream data from pod to stdout file
+@@ -293,6 +307,37 @@ func (kw *KubeUnit) kubeLoggingNoReconnect(streamWait *sync.WaitGroup, stdout *S
  	}
  }
  
++// loggingContext keeps normal stream cancellation tied to the work unit. If that
++// context is already canceled during recovery, it returns a bounded independent
++// context so the status read or reconnect can still reach Kubernetes.
++func (kw *KubeUnit) loggingContext(recoveryTimeout time.Duration) (context.Context, context.CancelFunc) {
++	workContext := kw.GetContext()
++	if workContext != nil && workContext.Err() == nil {
++		return context.WithCancel(workContext)
++	}
++
++	return context.WithTimeout(context.Background(), recoveryTimeout)
++}
++
++func (kw *KubeUnit) podForLogging(podNamespace, podName string) (*corev1.Pod, error) {
++	ctx, cancel := kw.loggingContext(2 * time.Second)
++	defer cancel()
++
++	return KubeAPIWrapperInstance.Get(ctx, kw.clientset, podNamespace, podName, metav1.GetOptions{})
++}
++
 +// podPhaseForLogging reports the pod's current phase, or an empty phase when it
 +// cannot be read. It distinguishes "the pod finished, stop streaming" from "the
 +// log stream broke while the pod is still producing output, keep reconnecting".
 +func (kw *KubeUnit) podPhaseForLogging(podNamespace, podName string) corev1.PodPhase {
-+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-+	defer cancel()
-+	pod, err := KubeAPIWrapperInstance.Get(ctx, kw.clientset, podNamespace, podName, metav1.GetOptions{})
++	pod, err := kw.podForLogging(podNamespace, podName)
 +	if err != nil || pod == nil {
 +		return ""
 +	}
@@ -23,7 +73,16 @@ index f4f0097..501ba07 100644
  func (kw *KubeUnit) kubeLoggingWithReconnect(streamWait *sync.WaitGroup, stdout *STDoutWriter, stdinErr *error, stdoutErr *error) {
  	// preferred method for k8s >= 1.23.14
  	defer streamWait.Done()
-@@ -346,6 +360,22 @@ func (kw *KubeUnit) kubeLoggingWithReconnect(streamWait *sync.WaitGroup, stdout
+@@ -313,7 +358,7 @@ func (kw *KubeUnit) kubeLoggingWithReconnect(streamWait *sync.WaitGroup, stdout
+ 
+ 		// get pod, with retry
+ 		for retries := 5; retries > 0; retries-- {
+-			kw.pod, err = KubeAPIWrapperInstance.Get(kw.GetContext(), kw.clientset, podNamespace, podName, metav1.GetOptions{})
++			kw.pod, err = kw.podForLogging(podNamespace, podName)
+ 			if err == nil {
+ 				break
+ 			}
+@@ -346,6 +391,22 @@ func (kw *KubeUnit) kubeLoggingWithReconnect(streamWait *sync.WaitGroup, stdout
  		for *stdinErr == nil { // check between every line read to see if we need to stop reading
  			line, err := streamReader.ReadString('\n')
  			if err != nil {
@@ -48,15 +107,18 @@ index f4f0097..501ba07 100644
  						"Context was canceled while reading logs for pod %s/%s. Assuming pod has finished",
 diff --git a/pkg/workceptor/kubernetes_stream_test.go b/pkg/workceptor/kubernetes_stream_test.go
 new file mode 100644
-index 0000000..22a64dc
+index 0000000..eece5df
 --- /dev/null
 +++ b/pkg/workceptor/kubernetes_stream_test.go
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,119 @@
 +package workceptor
 +
 +import (
 +	"context"
++	"io"
++	"strings"
 +	"testing"
++	"time"
 +
 +	corev1 "k8s.io/api/core/v1"
 +	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -114,5 +176,57 @@ index 0000000..22a64dc
 +	}
 +	if !fakeAPI.observedActive {
 +		t.Fatal("pod phase query was not made")
++	}
++}
++
++func TestLoggingContextPreservesActiveWorkCancellation(t *testing.T) {
++	workContext, cancelWork := context.WithCancel(context.Background())
++	base := canceledContextBaseWorkUnit{ctx: workContext}
++	kw := &KubeUnit{BaseWorkUnitForWorkUnit: base}
++
++	loggingContext, cancelLogging := kw.loggingContext(time.Minute)
++	t.Cleanup(cancelLogging)
++	if loggingContext.Err() != nil {
++		t.Fatalf("logging context started canceled: %v", loggingContext.Err())
++	}
++	cancelWork()
++	if loggingContext.Err() != context.Canceled {
++		t.Fatalf("logging context error = %v, want %v", loggingContext.Err(), context.Canceled)
++	}
++}
++
++func TestLoggingContextDetachesCanceledWorkWithDeadline(t *testing.T) {
++	workContext, cancelWork := context.WithCancel(context.Background())
++	cancelWork()
++	base := canceledContextBaseWorkUnit{ctx: workContext}
++	kw := &KubeUnit{BaseWorkUnitForWorkUnit: base}
++
++	loggingContext, cancelLogging := kw.loggingContext(time.Minute)
++	t.Cleanup(cancelLogging)
++	if loggingContext.Err() != nil {
++		t.Fatalf("recovery context inherited cancellation: %v", loggingContext.Err())
++	}
++	deadline, ok := loggingContext.Deadline()
++	if !ok {
++		t.Fatal("recovery context has no deadline")
++	}
++	remaining := time.Until(deadline)
++	if remaining <= 0 || remaining > time.Minute {
++		t.Fatalf("recovery deadline remaining = %s, want within one minute", remaining)
++	}
++}
++
++func TestLoggingReadCloserCancelsOwnedContext(t *testing.T) {
++	streamContext, cancelStream := context.WithCancel(context.Background())
++	stream := &loggingReadCloser{
++		ReadCloser: io.NopCloser(strings.NewReader("")),
++		cancel:     cancelStream,
++	}
++
++	if err := stream.Close(); err != nil {
++		t.Fatalf("Close() error = %v", err)
++	}
++	if streamContext.Err() != context.Canceled {
++		t.Fatalf("stream context error = %v, want %v", streamContext.Err(), context.Canceled)
 +	}
 +}

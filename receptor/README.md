@@ -37,4 +37,7 @@ more output coming, so the retry budget is refilled and the stream reconnected.
 The phase lookup uses its own bounded context, because the log-stream failure can
 cancel the work context before receptor asks Kubernetes whether the pod is still
 running. A pod in a terminal phase falls through to the original happy path, so
-the loop still terminates.
+the loop still terminates. If the Pod is still active after cancellation, the
+following Pod read and log-stream reopen also use bounded independent recovery
+contexts; otherwise they immediately fail through the canceled client rate
+limiter. The reopened stream owns that recovery context and cancels it on close.
