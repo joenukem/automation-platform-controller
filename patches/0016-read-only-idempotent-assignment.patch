@@ -1,0 +1,38 @@
+From: Automation Platform controller <controller@pipefail.dev>
+Subject: [PATCH 0016] allow idempotent writes to read-only settings
+
+Fixes F314. django-ansible-base temporarily assigns and restores
+CSRF_TRUSTED_ORIGINS while authenticating a request. The controller registers
+that setting as read-only, so its settings wrapper raised before the API view
+could run even when both assigned values matched the current effective value.
+
+Treat an equal assignment as a no-op without persisting anything. A different
+value remains rejected with ImproperlyConfigured, preserving the read-only
+contract. The focused settings unit test covers both cases; live acceptance
+uses signed authenticated credential-type and job-template reads.
+
+diff --git a/awx/conf/settings.py b/awx/conf/settings.py
+--- a/awx/conf/settings.py
++++ b/awx/conf/settings.py
+@@ -444,6 +444,8 @@ class SettingsWrapper(object):
+     def _set_local(self, name, value):
+         field = self.registry.get_setting_field(name)
+         if field.read_only:
++            if value == getattr(self, name):
++                return
+             logger.warning('Attempt to set read only setting "%s".', name)
+             raise ImproperlyConfigured('Setting "{}" is read only.'.format(name))
+ 
+diff --git a/awx/conf/tests/unit/test_settings.py b/awx/conf/tests/unit/test_settings.py
+--- a/awx/conf/tests/unit/test_settings.py
++++ b/awx/conf/tests/unit/test_settings.py
+@@ -177,7 +177,9 @@ def test_read_only_setting_assignment(settings):
+ def test_read_only_setting_assignment(settings):
+     "read-only settings cannot be overwritten"
+     settings.registry.register('AWX_SOME_SETTING', field_class=fields.CharField, category=_('System'), category_slug='system')
+     assert settings.AWX_SOME_SETTING == 'DEFAULT'
++    settings.AWX_SOME_SETTING = 'DEFAULT'
++    assert settings.AWX_SOME_SETTING == 'DEFAULT'
+     with pytest.raises(ImproperlyConfigured):
+         settings.AWX_SOME_SETTING = 'CHANGED'
+     assert settings.AWX_SOME_SETTING == 'DEFAULT'

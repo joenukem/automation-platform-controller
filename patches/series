@@ -14,3 +14,4 @@
 0013-unified-jobs-filtered-count.patch
 0014-enable-dab-authentication.patch
 0015-yield-org-deletion-workers.patch
+0016-read-only-idempotent-assignment.patch
