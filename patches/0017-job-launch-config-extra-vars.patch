@@ -1,0 +1,31 @@
+From: Automation Platform controller <controller@pipefail.dev>
+Subject: [PATCH 0017] pass launch-config extra vars to the job runner
+
+Fixes EX467/api-script-launch. Job launch prompts are persisted in
+JobLaunchConfig for relaunch, but RunJob built ansible-runner's extra-vars
+file only from the Job row. Merge the saved launch-time variables into the
+runner payload so API-provided values reach the playbook. Use display mode so
+survey password values are restored for execution, then apply controller
+metadata last as before.
+
+Verification: Shadowman live CI for the api-script-launch button flow.
+
+diff --git a/awx/main/tasks/jobs.py b/awx/main/tasks/jobs.py
+--- a/awx/main/tasks/jobs.py
++++ b/awx/main/tasks/jobs.py
+@@ -1250,7 +1250,13 @@
+     def build_extra_vars_file(self, job, private_data_dir):
+         extra_vars = dict()
+         # load in JT extra vars
+         if job.extra_vars_dict:
+             extra_vars.update(json.loads(job.decrypted_extra_vars()))
++        # Launch prompts are stored separately for relaunch; include them in
++        # the runner payload, with launch-time values taking precedence.
++        launch_config = getattr(job, 'launch_config', None)
++        if launch_config:
++            launch_prompts = launch_config.prompts_dict(display=True)
++            extra_vars.update(launch_prompts.get('extra_vars', {}))
+         # load in meta vars, overriding any variable set in JT extra vars
+         extra_vars.update(job.awx_meta_vars())
+         # By default, all extra vars disallow Jinja2 template usage for
+         # security reasons; top level key-values defined in JT.extra_vars, however,
