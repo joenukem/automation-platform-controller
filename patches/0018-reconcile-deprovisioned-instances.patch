@@ -1,0 +1,89 @@
+From: Automation Platform controller <controller@pipefail.dev>
+Subject: [PATCH 0018] recover instance deprovisioning from the task-side database pump
+
+The Instance post_save signal publishes remove_deprovisioned_node from the
+requesting process. In the shared deployment that can be a web process whose
+dispatch queue has no workers, so the publish disappears and instances remain
+in deprovisioning indefinitely. The task node now periodically adopts stale
+deprovisioning rows and dispatches the existing idempotent remover on its own
+worker queue. This also recovers rows updated without the model signal.
+
+diff --git a/awx/main/models/ha.py b/awx/main/models/ha.py
+--- a/awx/main/models/ha.py
++++ b/awx/main/models/ha.py
+@@ -534,9 +534,4 @@ def on_instance_saved(sender, instance, created=False, raw=False, **kwargs):
+-    if settings.IS_K8S and instance.node_type in [Instance.Types.HOP, Instance.Types.EXECUTION]:
+-        if instance.node_state == Instance.States.DEPROVISIONING:
+-            from awx.main.tasks.receptor import remove_deprovisioned_node  # prevents circular import
+-
+-            # wait for jobs on the node to complete, then delete the
+-            # node and kick off write_receptor_config
+-            connection.on_commit(lambda: remove_deprovisioned_node.apply_async([instance.hostname]))
++    # The task-side process_instance_deprovisionings pump reconciles durable
++    # deprovisioning state. Publishing here can target a web-only queue.
+     if created or instance.has_policy_changes():
+         schedule_policy_task()
+
+diff --git a/awx/main/tasks/receptor.py b/awx/main/tasks/receptor.py
+--- a/awx/main/tasks/receptor.py
++++ b/awx/main/tasks/receptor.py
+@@ -860,5 +860,43 @@ def remove_deprovisioned_node(hostname):
+     while node_jobs.exists():
+         time.sleep(60)
+ 
+     # This will as a side effect also delete the InstanceLinks that are tied to it.
+     Instance.objects.filter(hostname=hostname).delete()
++
++
++DEPROVISIONING_RETRY_SECONDS = 30
++
++
++@task(queue=get_task_queuename, timeout=120, on_duplicate='discard')
++def process_instance_deprovisionings():
++    """Adopt stale deprovisioning rows from a real task worker queue.
++
++    Instance state is durable; dispatching directly from the API process is
++    not, because web queues have no consumers in this deployment. Rechecking
++    the database makes dropped publishes and signal-bypassing updates recover
++    automatically. The remover itself is safe to re-dispatch while it waits
++    for jobs because it uses the same hostname and discards duplicates.
++    """
++    from datetime import timedelta
++
++    from django.utils import timezone
++
++    from awx.main.models import Instance
++
++    if not settings.IS_K8S:
++        return
++
++    stale_before = timezone.now() - timedelta(seconds=DEPROVISIONING_RETRY_SECONDS)
++    stale_instances = (
++        Instance.objects.filter(
++            node_state=Instance.States.DEPROVISIONING,
++            node_type__in=(Instance.Types.HOP, Instance.Types.EXECUTION),
++            modified__lt=stale_before,
++        )
++        .order_by('modified', 'pk')
++        .values_list('hostname', flat=True).iterator()
++    )
++    for hostname in stale_instances:
++        logger.info('adopting deprovisioning instance %s from database pump', hostname)
++        remove_deprovisioned_node.apply_async([hostname], queue=get_task_queuename())
++
+diff --git a/awx/settings/defaults.py b/awx/settings/defaults.py
+--- a/awx/settings/defaults.py
++++ b/awx/settings/defaults.py
+@@ -454,6 +454,12 @@ DISPATCHER_SCHEDULE = {
+         'schedule': 20,
+         'options': {'expires': 15},
+     },
++    # Adopt instance deprovisioning rows whose web-tier publish was dropped.
++    'awx.main.tasks.receptor.process_instance_deprovisionings': {
++        'task': 'awx.main.tasks.receptor.process_instance_deprovisionings',
++        'schedule': 20,
++        'options': {'expires': 15},
++    },
+     'awx.main.tasks.system.awx_receptor_workunit_reaper': {'task': 'awx.main.tasks.system.awx_receptor_workunit_reaper', 'schedule': 60},
+     'awx.main.analytics.analytics_tasks.send_subsystem_metrics': {'task': 'awx.main.analytics.analytics_tasks.send_subsystem_metrics', 'schedule': 20},
+     'awx.main.tasks.system.cleanup_images_and_files': {'task': 'awx.main.tasks.system.cleanup_images_and_files', 'schedule': 10800},
