@@ -1,0 +1,26 @@
+From: Automation Platform controller <controller@pipefail.dev>
+Subject: [PATCH 0019] set the receptor user's primary group
+
+The instance install bundle creates the receptor group before creating its
+user. When the user module sees an existing same-named group without an
+explicit primary group, it can create the account with the system default
+primary gid instead. receptor.service runs with Group=receptor_group, so
+rootless podman then runs under a gid that does not match the account's
+primary gid and newuidmap refuses to create the user namespace.
+
+Set the user's primary group to the group already created by the bundle.
+The patch targets the template at the AWX SHA pinned in sources.lock; the
+Shadowman submission will run the build and rollout validation.
+
+diff --git a/awx/api/templates/instance_install_bundle/install_receptor.yml b/awx/api/templates/instance_install_bundle/install_receptor.yml
+--- a/awx/api/templates/instance_install_bundle/install_receptor.yml
++++ b/awx/api/templates/instance_install_bundle/install_receptor.yml
+@@ -10,7 +10,8 @@
+     - name: Create the receptor user
+       user:
+ {% verbatim %}
+         name: "{{ receptor_user }}"
++        group: "{{ receptor_group }}"
+ {% endverbatim %}
+         shell: /bin/bash
+ {% if instance.node_type == "execution" %}

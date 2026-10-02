@@ -17,3 +17,4 @@
 0016-read-only-idempotent-assignment.patch
 0017-job-launch-config-extra-vars.patch
 0018-reconcile-deprovisioned-instances.patch
+0019-receptor-user-primary-group.patch
