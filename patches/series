@@ -18,3 +18,4 @@
 0017-job-launch-config-extra-vars.patch
 0018-reconcile-deprovisioned-instances.patch
 0019-receptor-user-primary-group.patch
+0020-credential-type-label-translation.patch
