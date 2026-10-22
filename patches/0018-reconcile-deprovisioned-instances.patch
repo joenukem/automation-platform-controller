@@ -8,10 +8,21 @@ in deprovisioning indefinitely. The task node now periodically adopts stale
 deprovisioning rows and dispatches the existing idempotent remover on its own
 worker queue. This also recovers rows updated without the model signal.
 
+
+The hunk against awx/main/models/ha.py carried no blank line between the
+removed block and the schedule call, so it matched no context in the pinned
+upstream tree and `git apply` refused the whole patch: the queue stopped at
+0018 and no controller image could be built. The hunk is regenerated against
+the pinned sources.lock tree, and the added block no longer ends the file with
+an empty line.
 diff --git a/awx/main/models/ha.py b/awx/main/models/ha.py
+index 455d10d..16aa528 100644
 --- a/awx/main/models/ha.py
 +++ b/awx/main/models/ha.py
-@@ -534,9 +534,4 @@ def on_instance_saved(sender, instance, created=False, raw=False, **kwargs):
+@@ -579,14 +579,8 @@ def on_instance_saved(sender, instance, created=False, raw=False, **kwargs):
+                 instance.peers.add(*peers_addresses)
+                 schedule_write_receptor_config(broadcast=False)
+ 
 -    if settings.IS_K8S and instance.node_type in [Instance.Types.HOP, Instance.Types.EXECUTION]:
 -        if instance.node_state == Instance.States.DEPROVISIONING:
 -            from awx.main.tasks.receptor import remove_deprovisioned_node  # prevents circular import
@@ -19,17 +30,17 @@ diff --git a/awx/main/models/ha.py b/awx/main/models/ha.py
 -            # wait for jobs on the node to complete, then delete the
 -            # node and kick off write_receptor_config
 -            connection.on_commit(lambda: remove_deprovisioned_node.apply_async([instance.hostname]))
+-
 +    # The task-side process_instance_deprovisionings pump reconciles durable
 +    # deprovisioning state. Publishing here can target a web-only queue.
      if created or instance.has_policy_changes():
          schedule_policy_task()
-
+ 
 diff --git a/awx/main/tasks/receptor.py b/awx/main/tasks/receptor.py
+index 4332b5b..d007135 100644
 --- a/awx/main/tasks/receptor.py
 +++ b/awx/main/tasks/receptor.py
-@@ -860,5 +860,43 @@ def remove_deprovisioned_node(hostname):
-     while node_jobs.exists():
-         time.sleep(60)
+@@ -946,3 +946,40 @@ def remove_deprovisioned_node(hostname):
  
      # This will as a side effect also delete the InstanceLinks that are tied to it.
      Instance.objects.filter(hostname=hostname).delete()
@@ -70,8 +81,8 @@ diff --git a/awx/main/tasks/receptor.py b/awx/main/tasks/receptor.py
 +    for hostname in stale_instances:
 +        logger.info('adopting deprovisioning instance %s from database pump', hostname)
 +        remove_deprovisioned_node.apply_async([hostname], queue=get_task_queuename())
-+
 diff --git a/awx/settings/defaults.py b/awx/settings/defaults.py
+index c4566c4..1ec0a07 100644
 --- a/awx/settings/defaults.py
 +++ b/awx/settings/defaults.py
 @@ -454,6 +454,12 @@ DISPATCHER_SCHEDULE = {
